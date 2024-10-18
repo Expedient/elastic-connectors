@@ -123,6 +123,7 @@ def _default_config():
             "sharepoint_server": "connectors.sources.sharepoint_server:SharepointServerDataSource",
             "slack": "connectors.sources.slack:SlackDataSource",
             "zoom": "connectors.sources.zoom:ZoomDataSource",
+            "mediafly": "connectors.sources.mediafly:MediaflyDataSource",
         },
     }
 
