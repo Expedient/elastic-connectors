@@ -10,9 +10,10 @@ from functools import partial
 from typing import Any, Dict, List, Optional, AsyncGenerator
 import aiohttp
 from aiofiles.tempfile import NamedTemporaryFile
+from connectors.es.sink import OP_DELETE, OP_INDEX
 from connectors.source import BaseDataSource
 from connectors.logger import logger
-from connectors.utils import TIKA_SUPPORTED_FILETYPES, convert_to_b64
+from connectors.utils import TIKA_SUPPORTED_FILETYPES, convert_to_b64, iso_utc
 
 
 # Define global flags for log message length
@@ -146,6 +147,34 @@ class MediaflyClient:
             content = await resp.read()
             return content
 
+    async def get_incremental_changes(self, folder_id: str, last_sync_time: str) -> List[Dict[str, Any]]:
+        """
+        Retrieve incremental changes for a given folder since the last sync time.
+
+        Args:
+            folder_id (str): The ID of the folder to check for changes.
+            last_sync_time (str): The timestamp of the last sync.
+
+        Returns:
+            List[Dict[str, Any]]: A list of changed items.
+        """
+        url = f"{self.base_url}/items/{folder_id}"
+        params = {"productId": self.product_id, "recursive": "true"}
+        async with self.session.get(url, params=params, headers=self.headers) as resp:
+            if resp.status != 200:
+                print_message(
+                    "error", f"Error fetching items for folder {folder_id}: {resp.status} - {await resp.text()}"
+                )
+                return []
+
+            data = await resp.json()
+            folder_items = data.get("response", {}).get("items", [])
+
+            # Filter items based on last_sync_time
+            filtered_items = [item for item in folder_items if item.get("modified", "") > last_sync_time]
+
+            return filtered_items
+
 
 class MediaflyDataSource(BaseDataSource):
     """
@@ -154,6 +183,7 @@ class MediaflyDataSource(BaseDataSource):
 
     name = "Mediafly"
     service_type = "mediafly"
+    incremental_sync_enabled = True
 
     def __init__(self, configuration: Dict[str, Any]):
         super().__init__(configuration=configuration)
@@ -161,9 +191,10 @@ class MediaflyDataSource(BaseDataSource):
         self.product_id = self.configuration["product_id"]
         self.folder_ids = self.configuration["folder_ids"]
         self.exclude_file_types = self.configuration["exclude_file_types"]
-        self.client = MediaflyClient(api_key=self.api_key, product_id=self.product_id)
+        self.include_internal_only_files = self.configuration.get("include_internal_only_files", False)
         self.use_text_extraction_service = self.configuration.get("use_text_extraction_service", False)
         self.tika_supported_filetypes = TIKA_SUPPORTED_FILETYPES
+        self.client = MediaflyClient(api_key=self.api_key, product_id=self.product_id)
 
     @classmethod
     def get_default_configuration(cls) -> Dict[str, Any]:
@@ -200,12 +231,38 @@ class MediaflyDataSource(BaseDataSource):
                 "label": "Exclude file types",
                 "order": 4,
                 "type": "list",
-                "value": [],
+                "value": [
+                    "mp4",
+                    "mp3",
+                    "wav",
+                    "m4a",
+                    "m4v",
+                    "mov",
+                    "wmv",
+                ],
+            },
+            "use_share_links": {
+                "display": "toggle",
+                "label": "Use share links",
+                "order": 5,
+                "tooltip": "Use share links when available to access files instead of the direct download URL.",
+                "type": "bool",
+                "ui_restrictions": ["advanced"],
+                "value": False,
+            },
+            "include_internal_only_files": {
+                "display": "toggle",
+                "label": "Include internal-only files",
+                "order": 6,
+                "tooltip": "Include files marked as internal-only in the Mediafly environment.",
+                "type": "bool",
+                "ui_restrictions": ["advanced"],
+                "value": False,
             },
             "use_text_extraction_service": {
                 "display": "toggle",
                 "label": "Use text extraction service",
-                "order": 8,
+                "order": 7,
                 "tooltip": "Requires a separate deployment of the Elastic Text Extraction Service.",
                 "type": "bool",
                 "ui_restrictions": ["advanced"],
@@ -302,6 +359,8 @@ class MediaflyDataSource(BaseDataSource):
         if not doit:
             return None
 
+        print_message("debug", f"Getting content for item: {item.get('id')} at timestamp: {timestamp}")
+
         asset = item.get("asset", {})
         attachment_size = int(asset.get("size", 0))
         attachment_name = asset.get("filename", "")
@@ -311,6 +370,15 @@ class MediaflyDataSource(BaseDataSource):
             att_name=attachment_name, att_ext=attachment_extension, att_size=attachment_size
         ):
             return None
+
+        # Check if the item is internal-only and skip if not configured to include internal-only files
+        if not self.include_internal_only_files and item.get("metadata", {}).get("internalOnly", False):
+            print_message("info", f"Skipping internal-only item: {item.get('name', '')}")
+            return None
+
+        # if not item.get("metadata", {}).get("canDownload", False):
+        #     print_message("info", f"Cannot download item: {item.get('name', '')}. Skipping.")
+        #     return None
 
         download_url = asset.get("downloadUrl")
         if not download_url:
@@ -423,52 +491,11 @@ class MediaflyDataSource(BaseDataSource):
                 print_message("info", f"Processing folder ID: {folder_id}")
                 items = await self.client.get_child_items(folder_id)
                 for item in items:
-                    doc = {
-                        "_id": item.get("id"),
-                        "_timestamp": item.get("modified"),
-                        "name": item.get("metadata", {}).get("title"),
-                        "type": item.get("metadata", {}).get("contentType"),
-                        "description": item.get("metadata", {}).get("description"),
-                        "object_type": "mediafly_item",
-                        "createdDateTime": item.get("created"),
-                        "lastModifiedDateTime": item.get("modified"),
-                        "size": item.get("asset", {}).get("size"),
-                        "parentReference": {
-                            "id": item.get("parentId"),
-                            "name": next(
-                                (h["title"] for h in item.get("hierarchy", []) if h["id"] == item.get("parentId")), None
-                            ),
-                        },
-                        "lastModifiedBy": {
-                            "user": {
-                                "displayName": item.get("modifiedBy"),
-                                "email": item.get("modifiedBy"),  # Assuming email is the same as the display name
-                            }
-                        },
-                        "createdBy": {
-                            "user": {
-                                "displayName": item.get("createdBy"),
-                                "email": item.get("createdBy"),  # Assuming email is the same as the display name
-                            }
-                        },
-                        "_allow_access_control": list(
-                            set(
-                                f"{perm['assigneeType']}:{perm['assigneeName']}"
-                                for perm in item.get("inheritedPermissions", [])
-                            )
-                        ),
-                    }
-
-                    # Check for shareLinks and use the first one's URL as webUrl if available
-                    share_links = item.get("shareLinks", [])
-                    if share_links and isinstance(share_links, list) and len(share_links) > 0:
-                        doc["webUrl"] = share_links[0].get("url")
-                    else:
-                        doc["webUrl"] = item.get("asset", {}).get("url")
-
-                    # Store the original download URL for the connector to use
-                    doc["_original_download_url"] = item.get("asset", {}).get("downloadUrl")
-
+                    doc = self._create_doc_from_item(item)
+                    # Using yield allows us to generate documents one at a time,
+                    # which is more memory-efficient than creating a list of all documents.
+                    # The first yielded value is the document metadata,
+                    # and the second is a partial function to get the document content.
                     yield doc, partial(self.get_content, item)
         except aiohttp.ClientError as e:
             print_message("exception", f"Network error fetching documents from Mediafly: {e}")
@@ -483,13 +510,41 @@ class MediaflyDataSource(BaseDataSource):
 
         Args:
             sync_cursor (Optional[Any], optional): Sync cursor for incremental sync. Defaults to None.
+            filtering (Optional[Dict[str, Any]], optional): Filtering options. Defaults to None.
 
         Yields:
             AsyncGenerator[Dict[str, Any], None]: Generator of document data.
         """
-        # For now, we'll just call get_docs as we don't have an incremental sync implementation
-        async for doc in self.get_docs():
-            yield doc
+        if sync_cursor is None:
+            self._sync_cursor = {
+                "last_sync_time": iso_utc(),
+            }
+        else:
+            self._sync_cursor = sync_cursor
+
+        last_sync_time = self._sync_cursor.get("last_sync_time")
+
+        try:
+            for folder_id in self.folder_ids:
+                print_message("info", f"Processing folder ID: {folder_id}")
+                items = await self.client.get_incremental_changes(folder_id, last_sync_time)
+                for item in items:
+                    doc = self._create_doc_from_item(item)
+                    operation = OP_INDEX if item.get("status") != "deleted" else OP_DELETE
+                    # Similar to get_docs, we use yield to generate documents incrementally.
+                    # Here, we yield three values:
+                    # 1. The document metadata
+                    # 2. A partial function to get the document content
+                    # 3. The operation to perform (index or delete)
+                    # This allows the caller to process each document individually and efficiently.
+                    yield doc, partial(self.get_content, item), operation
+
+            # Update the sync cursor with the current time
+            self._sync_cursor["last_sync_time"] = iso_utc()
+        except aiohttp.ClientError as e:
+            print_message("exception", f"Network error fetching incremental documents from Mediafly: {e}")
+        except KeyError as e:
+            print_message("exception", f"Invalid data structure in Mediafly response: {e}")
 
     async def get_access_control(self):
         """
@@ -514,3 +569,57 @@ class MediaflyDataSource(BaseDataSource):
         """
         # Access control query is not implemented for Mediafly
         return None
+
+    def _create_doc_from_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create a document dictionary from a Mediafly item.
+
+        Args:
+            item (Dict[str, Any]): The Mediafly item data.
+
+        Returns:
+            Dict[str, Any]: The formatted document dictionary.
+        """
+        doc = {
+            "_id": item.get("id"),
+            "_timestamp": item.get("modified"),
+            "name": item.get("metadata", {}).get("title"),
+            "type": item.get("metadata", {}).get("contentType"),
+            "description": item.get("metadata", {}).get("description"),
+            "object_type": "mediafly_item",
+            "createdDateTime": item.get("created"),
+            "lastModifiedDateTime": item.get("modified"),
+            "size": item.get("asset", {}).get("size"),
+            "parentReference": {
+                "id": item.get("parentId"),
+                "name": next((h["title"] for h in item.get("hierarchy", []) if h["id"] == item.get("parentId")), None),
+            },
+            "lastModifiedBy": {
+                "user": {
+                    "displayName": item.get("modifiedBy"),
+                    "email": item.get("modifiedBy"),  # Assuming email is the same as the display name
+                }
+            },
+            "createdBy": {
+                "user": {
+                    "displayName": item.get("createdBy"),
+                    "email": item.get("createdBy"),  # Assuming email is the same as the display name
+                }
+            },
+            "_allow_access_control": list(
+                set(f"{perm['assigneeType']}:{perm['assigneeName']}" for perm in item.get("inheritedPermissions", []))
+            ),
+        }
+
+        doc["webUrl"] = item.get("asset", {}).get("url")
+
+        # Check for shareLinks and use the first one's URL as webUrl if available
+        if self.configuration.get("use_share_links"):
+            share_links = item.get("shareLinks", [])
+            if share_links and isinstance(share_links, list) and len(share_links) > 0:
+                doc["webUrl"] = share_links[0].get("url")
+
+        # Store the original download URL for the connector to use
+        doc["_original_download_url"] = item.get("asset", {}).get("downloadUrl")
+
+        return doc
