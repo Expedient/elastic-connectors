@@ -175,6 +175,22 @@ class MediaflyClient:
 
             return filtered_items
 
+    async def get_all_items(self, folder_ids: List[str]) -> List[Dict[str, Any]]:
+        """
+        Retrieve all items from the specified folders.
+
+        Args:
+            folder_ids (List[str]): List of folder IDs to retrieve items from.
+
+        Returns:
+            List[Dict[str, Any]]: A list of all items.
+        """
+        all_items = []
+        for folder_id in folder_ids:
+            items = await self.get_child_items(folder_id)
+            all_items.extend(items)
+        return all_items
+
 
 class MediaflyDataSource(BaseDataSource):
     """
@@ -487,16 +503,18 @@ class MediaflyDataSource(BaseDataSource):
             AsyncGenerator[Dict[str, Any], None]: Generator of document data.
         """
         try:
+            all_doc_ids = set()
             for folder_id in self.folder_ids:
                 print_message("info", f"Processing folder ID: {folder_id}")
                 items = await self.client.get_child_items(folder_id)
                 for item in items:
                     doc = self._create_doc_from_item(item)
-                    # Using yield allows us to generate documents one at a time,
-                    # which is more memory-efficient than creating a list of all documents.
-                    # The first yielded value is the document metadata,
-                    # and the second is a partial function to get the document content.
+                    all_doc_ids.add(doc["_id"])
                     yield doc, partial(self.get_content, item)
+
+            # Update the sync cursor with all document IDs
+            self._sync_cursor = {"last_sync_time": iso_utc(), "previous_doc_ids": list(all_doc_ids)}
+            print_message("info", f"Full sync: Total documents processed: {len(all_doc_ids)}")
         except aiohttp.ClientError as e:
             print_message("exception", f"Network error fetching documents from Mediafly: {e}")
         except KeyError as e:
@@ -516,13 +534,16 @@ class MediaflyDataSource(BaseDataSource):
             AsyncGenerator[Dict[str, Any], None]: Generator of document data.
         """
         if sync_cursor is None:
-            self._sync_cursor = {
-                "last_sync_time": iso_utc(),
-            }
+            print_message("info", "No sync cursor found, starting new sync")
+            self._sync_cursor = {"last_sync_time": iso_utc(), "previous_doc_ids": []}
         else:
+            print_message("info", "Sync cursor found, resuming sync")
             self._sync_cursor = sync_cursor
 
         last_sync_time = self._sync_cursor.get("last_sync_time")
+        previous_doc_ids = set(self._sync_cursor.get("previous_doc_ids", []))
+        all_items = await self.client.get_all_items(self.folder_ids)
+        current_doc_ids = set(item.get("id") for item in all_items)
 
         try:
             for folder_id in self.folder_ids:
@@ -530,17 +551,26 @@ class MediaflyDataSource(BaseDataSource):
                 items = await self.client.get_incremental_changes(folder_id, last_sync_time)
                 for item in items:
                     doc = self._create_doc_from_item(item)
-                    operation = OP_INDEX if item.get("status") != "deleted" else OP_DELETE
-                    # Similar to get_docs, we use yield to generate documents incrementally.
-                    # Here, we yield three values:
-                    # 1. The document metadata
-                    # 2. A partial function to get the document content
-                    # 3. The operation to perform (index or delete)
-                    # This allows the caller to process each document individually and efficiently.
-                    yield doc, partial(self.get_content, item), operation
+                    current_doc_ids.add(doc["_id"])
+                    # Yield each document as we process it.
+                    # The first value is the document metadata,
+                    # the second is a partial function to get the document content,
+                    # and the third is the operation (OP_INDEX for existing or new documents).
+                    yield doc, partial(self.get_content, item), OP_INDEX
 
-            # Update the sync cursor with the current time
+            # Identify deleted documents
+            deleted_doc_ids = previous_doc_ids - current_doc_ids
+            print_message("info", f"Previous document IDs: {previous_doc_ids}")
+            print_message("info", f"Current document IDs: {current_doc_ids}")
+            print_message("info", f"To delete document IDs: {deleted_doc_ids}")
+            for deleted_id in deleted_doc_ids:
+                # For deleted documents, we only need to yield the document ID,
+                # no content function is needed, and we specify the OP_DELETE operation.
+                yield {"_id": deleted_id}, None, OP_DELETE
+
+            # Update the sync cursor with the current time and current document IDs
             self._sync_cursor["last_sync_time"] = iso_utc()
+            self._sync_cursor["previous_doc_ids"] = list(current_doc_ids)
         except aiohttp.ClientError as e:
             print_message("exception", f"Network error fetching incremental documents from Mediafly: {e}")
         except KeyError as e:
