@@ -8,10 +8,9 @@ It includes classes for interacting with the Mediafly API and processing Mediafl
 from functools import partial
 from typing import Any, Dict, List, Optional, AsyncGenerator
 import aiohttp
-from connectors.es.sink import OP_DELETE, OP_INDEX
 from connectors.source import BaseDataSource
 from connectors.logger import logger
-from connectors.utils import TIKA_SUPPORTED_FILETYPES, iso_utc
+from connectors.utils import TIKA_SUPPORTED_FILETYPES
 
 FILE_WRITE_CHUNK_SIZE = 1024 * 64
 
@@ -101,7 +100,7 @@ class MediaflyClient:
         """
         items = []
         item = await self.get_item(item_id)
-        print_message("info", f"Processing folder ID: {item_id}")
+        print_message("debug", f"Processing folder ID: {item_id}")
 
         # Check if the current item is a folder
         if item.get("response", {}).get("type") == "folder":
@@ -118,7 +117,7 @@ class MediaflyClient:
 
         return items
 
-    async def download_item(self, item: Dict[str, Any]) -> Optional[aiohttp.ClientResponse]:
+    async def download_item(self, attachment: Dict[str, Any]) -> Optional[aiohttp.ClientResponse]:
         """
         Download the content of a Mediafly item.
 
@@ -128,25 +127,18 @@ class MediaflyClient:
         Returns:
             Optional[aiohttp.ClientResponse]: The HTTP response object or None if download fails.
         """
-        asset = item.get("asset", {})
-        if not asset:
-            print_message(
-                "warning",
-                f"No asset information found for item: {item.get('metadata', {}).get('title', '')}",
-            )
-            return None
 
-        download_url = asset.get("downloadUrl")
+        download_url = attachment.get("downloadUrl")
         if not download_url:
-            print_message("warning", f"No download URL for: {item.get('metadata', {}).get('title', '')}")
+            print_message("warning", f"No download URL for: {attachment.get('filename', '')}")
             return None
 
-        print_message("info", f"Downloading: {asset.get('filename', '')}")
+        print_message("info", f"Downloading: {attachment.get('filename', '')}")
         resp = await self.session.get(download_url, headers=self.headers)
         if resp.status != 200:
             print_message(
                 "error",
-                f"Error downloading item {item.get('id')}: {resp.status} - {await resp.text()}",
+                f"Error downloading item {attachment.get('filename', '')}: {resp.status} - {await resp.text()}",
             )
             return None
         return resp
@@ -179,24 +171,8 @@ class MediaflyClient:
 
             return filtered_items
 
-    async def get_all_items(self, folder_ids: List[str]) -> List[Dict[str, Any]]:
-        """
-        Retrieve all items from the specified folders.
 
-        Args:
-            folder_ids (List[str]): List of folder IDs to retrieve items from.
-
-        Returns:
-            List[Dict[str, Any]]: A list of all items.
-        """
-        all_items = []
-        for folder_id in folder_ids:
-            items = await self.get_child_items(folder_id)
-            all_items.extend(items)
-        return all_items
-
-
-class MediaflyDataSource(BaseDataSource):
+class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
     """
     MediaflyDataSource is a connector for indexing Mediafly content into Elastic Enterprise Search.
     """
@@ -307,41 +283,45 @@ class MediaflyDataSource(BaseDataSource):
     async def close(self) -> None:
         await self.client.close()
 
-    def _pre_checks_for_get_docs(self, extension: str, filename: str) -> bool:
+    def _pre_checks_for_get_docs(self, asset):
         """
         Perform pre-checks for the get_docs method.
 
         Args:
-            filename (str): The name of the file.
-            extension (str): The extension of the file.
+            asset (Dict[str, Any]): The asset data.
 
         Returns:
             bool: True if the attachment passes all checks, False otherwise.
         """
-        if extension.lower() not in TIKA_SUPPORTED_FILETYPES:
+        filename = asset.get("filename", "")
+        file_extension = self.get_file_extension(filename)
+        if file_extension.lower() not in TIKA_SUPPORTED_FILETYPES:
             print_message("debug", f"Skipping {filename} as it is not TIKA-supported.")
             return False
 
-        if extension.lower() in self.exclude_file_types:
+        if file_extension.lower() in self.exclude_file_types:
             print_message("debug", f"Skipping {filename} as it is in the excluded file types.")
             return False
 
         return True
 
     async def get_content(self, attachment, timestamp=None, doit=False):
-        """Extracts the content for Apache TIKA supported file types."""
-        # Get file details from the asset object
-        asset = attachment.get("asset", {})
-        file_size = int(asset.get("size", 0))
-        filename = asset.get("filename", "")
+        """
+        Extracts the content for Apache TIKA supported file types.
+
+        Args:
+            attachment (Dict[str, Any]): The attachment data.
+            timestamp (Optional[str]): The timestamp of the last sync.
+            doit (bool): Whether to download the file.
+
+        Returns:
+            Dict[str, Any]: The document data.
+        """
         file_id = attachment.get("id")
+        filename = attachment.get("filename", "")
+        file_size = int(attachment.get("size", 0))
 
         if not (doit and file_size > 0):
-            print_message("debug", f"Skipping {filename} because it is not downloadable.")
-            return
-
-        if not filename or not file_id:
-            print_message("debug", f"Missing filename or ID for attachment: {attachment}")
             return
 
         file_extension = self.get_file_extension(filename)
@@ -387,125 +367,25 @@ class MediaflyDataSource(BaseDataSource):
         Yields:
             AsyncGenerator[Dict[str, Any], None]: Generator of document data.
         """
-        current_doc_ids = set()
+        for folder_id in self.folder_ids:
+            print_message("info", f"Processing folder ID: {folder_id}")
+            items = await self.client.get_child_items(folder_id)
+            for item in items:
+                doc = self._create_doc_from_item(item)
 
-        try:
-            for folder_id in self.folder_ids:
-                print_message("info", f"Processing folder ID: {folder_id}")
-                items = await self.client.get_child_items(folder_id)
-                for item in items:
-                    doc = self._create_doc_from_item(item)
-                    current_doc_ids.add(doc["_id"])
+                # Check if the file is TIKA-supported and not excluded
+                asset = item.get("asset", {})
+                asset["id"] = item.get("id")
+                asset["modified"] = item.get("modified")
 
-                    # Check if the file is TIKA-supported and not excluded
-                    asset = item.get("asset", {})
-                    filename = asset.get("filename", "")
-                    file_extension = self.get_file_extension(filename)
+                if not self._pre_checks_for_get_docs(asset):
+                    continue
 
-                    if not self._pre_checks_for_get_docs(file_extension, filename):
-                        continue
-
-                    # Yield each document as we process it.
-                    # The first value is the document metadata,
-                    # the second is a partial function to get the document content,
-                    # and the third is the operation (OP_INDEX for existing or new documents).
-                    yield doc, partial(self.get_content, item)
-
-            # Update the sync cursor with all document IDs
-            # self._sync_cursor = {"last_sync_time": iso_utc(), "previous_doc_ids": list(all_doc_ids)}
-            # print_message("info", f"Full sync: Total documents processed: {len(all_doc_ids)}")
-        except aiohttp.ClientError as e:
-            print_message("exception", f"Network error fetching documents from Mediafly: {e}")
-        except KeyError as e:
-            print_message("exception", f"Invalid data structure in Mediafly response: {e}")
-
-    async def get_docs_incrementally(
-        self, sync_cursor: Optional[Any] = None, filtering: Optional[Dict[str, Any]] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
-        """
-        Get documents incrementally from Mediafly.
-
-        Args:
-            sync_cursor (Optional[Any], optional): Sync cursor for incremental sync. Defaults to None.
-            filtering (Optional[Dict[str, Any]], optional): Filtering options. Defaults to None.
-
-        Yields:
-            AsyncGenerator[Dict[str, Any], None]: Generator of document data.
-        """
-        if sync_cursor is None:
-            print_message("info", "No sync cursor found, starting new sync")
-            self._sync_cursor = {"last_sync_time": iso_utc(), "previous_doc_ids": []}
-        else:
-            print_message("info", "Sync cursor found, resuming sync")
-            self._sync_cursor = sync_cursor
-
-        last_sync_time = self._sync_cursor.get("last_sync_time")
-        previous_doc_ids = set(self._sync_cursor.get("previous_doc_ids", []))
-        current_doc_ids = set()
-
-        try:
-            for folder_id in self.folder_ids:
-                print_message("info", f"Processing folder ID: {folder_id}")
-                items = await self.client.get_incremental_changes(folder_id, last_sync_time)
-                for item in items:
-                    doc = self._create_doc_from_item(item)
-                    current_doc_ids.add(doc["_id"])
-
-                    # Check if the file is TIKA-supported and not excluded
-                    asset = item.get("asset", {})
-                    filename = asset.get("filename", "")
-                    file_extension = self.get_file_extension(filename)
-
-                    if not self._pre_checks_for_get_docs(file_extension, filename):
-                        continue
-
-                    # Yield each document as we process it.
-                    # The first value is the document metadata,
-                    # the second is a partial function to get the document content,
-                    # and the third is the operation (OP_INDEX for existing or new documents).
-                    yield doc, partial(self.get_content, item), OP_INDEX
-
-            # Identify deleted documents
-            deleted_doc_ids = previous_doc_ids - current_doc_ids
-            print_message("info", f"Previous document IDs: {previous_doc_ids}")
-            print_message("info", f"Current document IDs: {current_doc_ids}")
-            print_message("info", f"To delete document IDs: {deleted_doc_ids}")
-            for deleted_id in deleted_doc_ids:
-                # For deleted documents, we only need to yield the document ID,
-                # no content function is needed, and we specify the OP_DELETE operation.
-                yield {"_id": deleted_id}, None, OP_DELETE
-
-            # Update the sync cursor with the current time and current document IDs
-            self._sync_cursor["last_sync_time"] = iso_utc()
-            self._sync_cursor["previous_doc_ids"] = list(current_doc_ids)
-        except aiohttp.ClientError as e:
-            print_message("exception", f"Network error fetching incremental documents from Mediafly: {e}")
-        except KeyError as e:
-            print_message("exception", f"Invalid data structure in Mediafly response: {e}")
-
-    async def get_access_control(self):
-        """
-        Get access control information.
-
-        This method is not implemented for Mediafly.
-        """
-        # Access control is not implemented for Mediafly
-        return None
-
-    def access_control_query(self, access_control: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        """
-        Get the access control query.
-
-        This method is not implemented for Mediafly.
-
-        Args:
-            access_control (Optional[Dict[str, Any]], optional): Access control data. Defaults to None.
-
-        Returns:
-            Optional[Dict[str, Any]]: Access control query.
-        """
-        # Access control query is not implemented for Mediafly
-        return None
+                # Yield each document as we process it.
+                # The first value is the document metadata,
+                # the second is a partial function to get the document content,
+                # and the third is the operation (OP_INDEX for existing or new documents).
+                yield doc, partial(self.get_content, asset)
 
     def _create_doc_from_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """
