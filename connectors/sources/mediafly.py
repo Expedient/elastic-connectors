@@ -5,16 +5,15 @@ This module provides a connector to index Mediafly content into Elastic Enterpri
 It includes classes for interacting with the Mediafly API and processing Mediafly items.
 """
 
-import os
 from functools import partial
 from typing import Any, Dict, List, Optional, AsyncGenerator
 import aiohttp
-from aiofiles.tempfile import NamedTemporaryFile
 from connectors.es.sink import OP_DELETE, OP_INDEX
 from connectors.source import BaseDataSource
 from connectors.logger import logger
-from connectors.utils import TIKA_SUPPORTED_FILETYPES, convert_to_b64, iso_utc
+from connectors.utils import TIKA_SUPPORTED_FILETYPES, iso_utc
 
+FILE_WRITE_CHUNK_SIZE = 1024 * 64
 
 # Define global flags for log message length
 LOG_LENGTH_DEBUG = None  # Set to an integer to truncate debug messages
@@ -108,10 +107,10 @@ class MediaflyClient:
         if item.get("response", {}).get("type") == "folder":
             for child in item.get("response", {}).get("items", []):
                 if child.get("type") == "folder":
-                    print_message("info", f"Found subfolder: {child.get('name', '')} (ID: {child.get('id', '')})")
+                    print_message("debug", f"Found subfolder: {child.get('name', '')} (ID: {child.get('id', '')})")
                     items.extend(await self.get_child_items(child["id"]))
                 else:
-                    print_message("info", f"Found item: {child.get('name', '')} (ID: {child.get('id', '')})")
+                    print_message("debug", f"Found item: {child.get('name', '')} (ID: {child.get('id', '')})")
                     items.append(child)
         else:
             # If it's not a folder, just add the item itself
@@ -119,7 +118,7 @@ class MediaflyClient:
 
         return items
 
-    async def download_item(self, item: Dict[str, Any]) -> Optional[bytes]:
+    async def download_item(self, item: Dict[str, Any]) -> Optional[aiohttp.ClientResponse]:
         """
         Download the content of a Mediafly item.
 
@@ -127,25 +126,30 @@ class MediaflyClient:
             item (Dict[str, Any]): The item data.
 
         Returns:
-            Optional[bytes]: The downloaded content or None if download fails.
+            Optional[aiohttp.ClientResponse]: The HTTP response object or None if download fails.
         """
         asset = item.get("asset", {})
         if not asset:
-            print_message("warning", f"No asset information found for item: {item.get('name', '')}")
+            print_message(
+                "warning",
+                f"No asset information found for item: {item.get('metadata', {}).get('title', '')}",
+            )
             return None
 
         download_url = asset.get("downloadUrl")
         if not download_url:
-            print_message("warning", f"No download URL for: {item.get('name', '')}")
+            print_message("warning", f"No download URL for: {item.get('metadata', {}).get('title', '')}")
             return None
 
         print_message("info", f"Downloading: {asset.get('filename', '')}")
-        async with self.session.get(download_url, headers=self.headers) as resp:
-            if resp.status != 200:
-                print_message("error", f"Error downloading item {item.get('id')}: {resp.status} - {await resp.text()}")
-                return None
-            content = await resp.read()
-            return content
+        resp = await self.session.get(download_url, headers=self.headers)
+        if resp.status != 200:
+            print_message(
+                "error",
+                f"Error downloading item {item.get('id')}: {resp.status} - {await resp.text()}",
+            )
+            return None
+        return resp
 
     async def get_incremental_changes(self, folder_id: str, last_sync_time: str) -> List[Dict[str, Any]]:
         """
@@ -303,198 +307,79 @@ class MediaflyDataSource(BaseDataSource):
     async def close(self) -> None:
         await self.client.close()
 
-    def _pre_checks_for_get_content(self, att_name: str, att_ext: str, att_size: int) -> bool:
+    def _pre_checks_for_get_docs(self, extension: str, filename: str) -> bool:
         """
-        Perform pre-checks for the get_content method.
+        Perform pre-checks for the get_docs method.
 
         Args:
-            att_name (str): The name of the attachment.
-            att_ext (str): The extension of the attachment.
-            att_size (int): The size of the attachment.
+            filename (str): The name of the file.
+            extension (str): The extension of the file.
 
         Returns:
             bool: True if the attachment passes all checks, False otherwise.
         """
-
-        if not att_name:
-            print_message("debug", "Attachment name is empty, skipping.")
+        if extension.lower() not in TIKA_SUPPORTED_FILETYPES:
+            print_message("debug", f"Skipping {filename} as it is not TIKA-supported.")
             return False
 
-        if att_size <= 0:
-            print_message("debug", f"Attachment size is 0, skipping {att_name}.")
+        if extension.lower() in self.exclude_file_types:
+            print_message("debug", f"Skipping {filename} as it is in the excluded file types.")
             return False
 
-        if att_ext == "":
-            print_message("debug", f"Files without extension are not supported, skipping {att_name}.")
-            return False
-
-        if att_ext.lower() in self.exclude_file_types:
-            print_message(
-                "debug",
-                f"Configured to exclude Files with the extension {att_ext}, skipping {att_name}.",
-            )
-            return False
-
-        if att_ext.lower() not in TIKA_SUPPORTED_FILETYPES:
-            print_message(
-                "debug",
-                f"Files with the extension {att_ext} are not supported by TIKA, skipping {att_name}.",
-            )
-            return False
-
-        if att_size > self.framework_config.max_file_size and not self.use_text_extraction_service:
-            max_size = self.framework_config.max_file_size
-            print_message(
-                "warning",
-                f"File size {att_size} of file {att_name} is larger than {max_size} bytes. Discarding file content",
-            )
-            return False
-
-        if att_size > 100000000:
-            print_message(
-                "warning",
-                f"File size {att_size} of file {att_name} is larger than 100MB. Discarding file content.",
-            )
-            return False
         return True
 
-    async def get_content(
-        self, item: Dict[str, Any], doit: bool = False, timestamp: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+    async def get_content(self, attachment, timestamp=None, doit=False):
+        """Extracts the content for Apache TIKA supported file types."""
+        # Get file details from the asset object
+        asset = attachment.get("asset", {})
+        file_size = int(asset.get("size", 0))
+        filename = asset.get("filename", "")
+        file_id = attachment.get("id")
+
+        if not (doit and file_size > 0):
+            print_message("debug", f"Skipping {filename} because it is not downloadable.")
+            return
+
+        if not filename or not file_id:
+            print_message("debug", f"Missing filename or ID for attachment: {attachment}")
+            return
+
+        file_extension = self.get_file_extension(filename)
+
+        if not self.can_file_be_downloaded(file_extension, filename, file_size):
+            return
+
+        document = {
+            "_id": file_id,
+            "_timestamp": timestamp or attachment.get("modified"),
+        }
+
+        async def download_func():
+            try:
+                response = await self.client.download_item(attachment)
+                if response is None:
+                    print_message("error", f"Failed to download item {file_id}: No response received.")
+                    return
+                # Yield data chunks directly
+                async for chunk in response.content.iter_chunked(FILE_WRITE_CHUNK_SIZE):
+                    yield chunk
+            except aiohttp.ClientError as e:
+                print_message("exception", f"Network error downloading item {file_id}: {e}")
+            except aiohttp.ClientResponseError as e:
+                print_message("exception", f"HTTP error downloading item {file_id}: {e.status} - {e.message}")
+
+        # Use the download_func directly without generic_chunked_download_func
+        extracted_doc = await self.download_and_extract_file(document, filename, file_extension, download_func)
+
+        if extracted_doc:
+            if "_attachment" in extracted_doc:
+                document["_attachment"] = extracted_doc["_attachment"]
+
+        return document
+
+    async def get_docs(self, filtering=None) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Get the content of a Mediafly item.
-        Generally this verifies the item is not excluded and can be processed then downloads the item.
-
-        Args:
-            item (Dict[str, Any]): The item data.
-            doit (bool): Whether to process the item or not.
-            timestamp (Optional[str]): The timestamp of the item.
-        Returns:
-            Optional[Dict[str, Any]]: The content of the item or None if processing fails.
-        """
-        if not doit:
-            return None
-
-        print_message("debug", f"Getting content for item: {item.get('id')} at timestamp: {timestamp}")
-
-        asset = item.get("asset", {})
-        attachment_size = int(asset.get("size", 0))
-        attachment_name = asset.get("filename", "")
-        attachment_extension = attachment_name[attachment_name.rfind(".") :] if "." in attachment_name else ""
-
-        if not self._pre_checks_for_get_content(
-            att_name=attachment_name, att_ext=attachment_extension, att_size=attachment_size
-        ):
-            return None
-
-        # Check if the item is internal-only and skip if not configured to include internal-only files
-        if not self.include_internal_only_files and item.get("metadata", {}).get("internalOnly", False):
-            print_message("info", f"Skipping internal-only item: {item.get('name', '')}")
-            return None
-
-        # if not item.get("metadata", {}).get("canDownload", False):
-        #     print_message("info", f"Cannot download item: {item.get('name', '')}. Skipping.")
-        #     return None
-
-        download_url = asset.get("downloadUrl")
-        if not download_url:
-            print_message("warning", f"No download URL found for item: {attachment_name}")
-            return None
-
-        try:
-            # Download the file to a temporary file so that we can use the text extraction service if configured
-            async with NamedTemporaryFile(
-                mode="wb", delete=False, suffix=attachment_extension, dir=self.download_dir
-            ) as temp_file:
-                temp_file_name = temp_file.name
-                async with self.client.session.get(download_url, headers=self.client.headers) as response:
-                    if response.status != 200:
-                        print_message(
-                            "error",
-                            f"Failed to download content for item {item.get('id')}: {response.status}",
-                        )
-                        return None
-
-                    while True:
-                        chunk = await response.content.read(8192)  # Read in 8KB chunks
-                        if not chunk:
-                            break
-                        await temp_file.write(chunk)
-
-            if (
-                self.configuration.get("use_text_extraction_service")
-                and attachment_extension in self.tika_supported_filetypes
-            ):
-                # If the extraction service is configured, use it to extract the text
-                # this requires a separate deployment of the Elastic Text Extraction Service
-                # https://www.elastic.co/guide/en/enterprise-search/current/text-extraction-service.html
-                # add something similar to  the following to your config.yml file:
-                #
-                # extraction_service:
-                #   host: http://extraction-service:8090
-                #   stream_chunk_size: 65536
-                if hasattr(self, "extraction_service"):
-                    try:
-                        print_message("info", f"Extracting text from {attachment_name} using extraction service")
-                        extracted_text = await self.extraction_service.extract_text(temp_file_name, attachment_name)
-                        if not extracted_text:
-                            print_message("warning", f"Extraction service returned empty text for {attachment_name}")
-                        return {
-                            "_id": item.get("id"),
-                            "_timestamp": item.get("modified"),
-                            "body": extracted_text,
-                        }
-                    except aiohttp.ClientError as e:
-                        print_message(
-                            "error",
-                            f"Network error during text extraction for item {item.get('id')}: {str(e)}",
-                        )
-                        return None
-                    except ValueError as e:
-                        print_message(
-                            "error",
-                            f"Invalid data received during text extraction for item {item.get('id')}: {str(e)}",
-                        )
-                        return None
-                else:
-                    print_message(
-                        "warning",
-                        f"Extraction service not configured for item {item.get('id')}",
-                    )
-                    return None
-            else:
-                # If the extraction service is not configured, or the file is not supported by TIKA,
-                # base64 encode the file contents and return that instead
-                # TODO: i need to run tests with extraction service disabled to confirm this path works
-                with open(temp_file_name, "rb") as file:
-                    encoded_content = convert_to_b64(file.read())
-                return {
-                    "_id": item.get("id"),
-                    "_timestamp": item.get("modified"),
-                    "_attachment": encoded_content,
-                }
-        except aiohttp.ClientError as e:
-            print_message(
-                "exception",
-                f"Network error downloading content for item {item.get('id')}: {e}",
-            )
-            return None
-        except IOError as e:
-            print_message(
-                "exception",
-                f"I/O error handling content for item {item.get('id')}: {e}",
-            )
-            return None
-        finally:
-            if temp_file_name:
-                try:
-                    os.remove(temp_file_name)
-                except IOError as e:
-                    print_message("warning", f"Failed to remove temporary file {temp_file_name}: {e}")
-
-    async def get_docs(self, filtering: Optional[Dict[str, Any]] = None) -> AsyncGenerator[Dict[str, Any], None]:
-        """
-        Get documents from MediaflyClient.
+        Get all documents from Mediafly.
 
         Args:
             filtering (Optional[Dict[str, Any]], optional): Filtering options. Defaults to None.
@@ -502,19 +387,33 @@ class MediaflyDataSource(BaseDataSource):
         Yields:
             AsyncGenerator[Dict[str, Any], None]: Generator of document data.
         """
+        current_doc_ids = set()
+
         try:
-            all_doc_ids = set()
             for folder_id in self.folder_ids:
                 print_message("info", f"Processing folder ID: {folder_id}")
                 items = await self.client.get_child_items(folder_id)
                 for item in items:
                     doc = self._create_doc_from_item(item)
-                    all_doc_ids.add(doc["_id"])
+                    current_doc_ids.add(doc["_id"])
+
+                    # Check if the file is TIKA-supported and not excluded
+                    asset = item.get("asset", {})
+                    filename = asset.get("filename", "")
+                    file_extension = self.get_file_extension(filename)
+
+                    if not self._pre_checks_for_get_docs(file_extension, filename):
+                        continue
+
+                    # Yield each document as we process it.
+                    # The first value is the document metadata,
+                    # the second is a partial function to get the document content,
+                    # and the third is the operation (OP_INDEX for existing or new documents).
                     yield doc, partial(self.get_content, item)
 
             # Update the sync cursor with all document IDs
-            self._sync_cursor = {"last_sync_time": iso_utc(), "previous_doc_ids": list(all_doc_ids)}
-            print_message("info", f"Full sync: Total documents processed: {len(all_doc_ids)}")
+            # self._sync_cursor = {"last_sync_time": iso_utc(), "previous_doc_ids": list(all_doc_ids)}
+            # print_message("info", f"Full sync: Total documents processed: {len(all_doc_ids)}")
         except aiohttp.ClientError as e:
             print_message("exception", f"Network error fetching documents from Mediafly: {e}")
         except KeyError as e:
@@ -542,8 +441,7 @@ class MediaflyDataSource(BaseDataSource):
 
         last_sync_time = self._sync_cursor.get("last_sync_time")
         previous_doc_ids = set(self._sync_cursor.get("previous_doc_ids", []))
-        all_items = await self.client.get_all_items(self.folder_ids)
-        current_doc_ids = set(item.get("id") for item in all_items)
+        current_doc_ids = set()
 
         try:
             for folder_id in self.folder_ids:
@@ -552,6 +450,15 @@ class MediaflyDataSource(BaseDataSource):
                 for item in items:
                     doc = self._create_doc_from_item(item)
                     current_doc_ids.add(doc["_id"])
+
+                    # Check if the file is TIKA-supported and not excluded
+                    asset = item.get("asset", {})
+                    filename = asset.get("filename", "")
+                    file_extension = self.get_file_extension(filename)
+
+                    if not self._pre_checks_for_get_docs(file_extension, filename):
+                        continue
+
                     # Yield each document as we process it.
                     # The first value is the document metadata,
                     # the second is a partial function to get the document content,
@@ -619,6 +526,7 @@ class MediaflyDataSource(BaseDataSource):
             "object_type": "mediafly_item",
             "createdDateTime": item.get("created"),
             "lastModifiedDateTime": item.get("modified"),
+            "filename": item.get("asset", {}).get("filename"),
             "size": item.get("asset", {}).get("size"),
             "parentReference": {
                 "id": item.get("parentId"),
