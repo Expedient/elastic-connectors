@@ -305,6 +305,61 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
 
         return True
 
+    def _create_doc_from_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create a document dictionary from a Mediafly item.
+
+        Args:
+            item (Dict[str, Any]): The Mediafly item data.
+
+        Returns:
+            Dict[str, Any]: The formatted document dictionary.
+        """
+        doc = {
+            "_id": item.get("id"),
+            "_timestamp": item.get("modified"),
+            "name": item.get("metadata", {}).get("title"),
+            "type": item.get("metadata", {}).get("contentType"),
+            "description": item.get("metadata", {}).get("description"),
+            "object_type": "mediafly_item",
+            "createdDateTime": item.get("created"),
+            "lastModifiedDateTime": item.get("modified"),
+            "filename": item.get("asset", {}).get("filename"),
+            "size": item.get("asset", {}).get("size"),
+            "parentReference": {
+                "id": item.get("parentId"),
+                "name": next((h["title"] for h in item.get("hierarchy", []) if h["id"] == item.get("parentId")), None),
+            },
+            "lastModifiedBy": {
+                "user": {
+                    "displayName": item.get("modifiedBy"),
+                    "email": item.get("modifiedBy"),  # Assuming email is the same as the display name
+                }
+            },
+            "createdBy": {
+                "user": {
+                    "displayName": item.get("createdBy"),
+                    "email": item.get("createdBy"),  # Assuming email is the same as the display name
+                }
+            },
+            "_allow_access_control": list(
+                set(f"{perm['assigneeType']}:{perm['assigneeName']}" for perm in item.get("inheritedPermissions", []))
+            ),
+        }
+
+        doc["webUrl"] = item.get("asset", {}).get("url")
+
+        # Check for shareLinks and use the first one's URL as webUrl if available
+        if self.configuration.get("use_share_links"):
+            share_links = item.get("shareLinks", [])
+            if share_links and isinstance(share_links, list) and len(share_links) > 0:
+                doc["webUrl"] = share_links[0].get("url")
+
+        # Store the original download URL for the connector to use
+        doc["_original_download_url"] = item.get("asset", {}).get("downloadUrl")
+
+        return doc
+
     async def get_content(self, attachment, timestamp=None, doit=False):
         """
         Extracts the content for Apache TIKA supported file types.
@@ -386,58 +441,3 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
                 # the second is a partial function to get the document content,
                 # and the third is the operation (OP_INDEX for existing or new documents).
                 yield doc, partial(self.get_content, asset)
-
-    def _create_doc_from_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Create a document dictionary from a Mediafly item.
-
-        Args:
-            item (Dict[str, Any]): The Mediafly item data.
-
-        Returns:
-            Dict[str, Any]: The formatted document dictionary.
-        """
-        doc = {
-            "_id": item.get("id"),
-            "_timestamp": item.get("modified"),
-            "name": item.get("metadata", {}).get("title"),
-            "type": item.get("metadata", {}).get("contentType"),
-            "description": item.get("metadata", {}).get("description"),
-            "object_type": "mediafly_item",
-            "createdDateTime": item.get("created"),
-            "lastModifiedDateTime": item.get("modified"),
-            "filename": item.get("asset", {}).get("filename"),
-            "size": item.get("asset", {}).get("size"),
-            "parentReference": {
-                "id": item.get("parentId"),
-                "name": next((h["title"] for h in item.get("hierarchy", []) if h["id"] == item.get("parentId")), None),
-            },
-            "lastModifiedBy": {
-                "user": {
-                    "displayName": item.get("modifiedBy"),
-                    "email": item.get("modifiedBy"),  # Assuming email is the same as the display name
-                }
-            },
-            "createdBy": {
-                "user": {
-                    "displayName": item.get("createdBy"),
-                    "email": item.get("createdBy"),  # Assuming email is the same as the display name
-                }
-            },
-            "_allow_access_control": list(
-                set(f"{perm['assigneeType']}:{perm['assigneeName']}" for perm in item.get("inheritedPermissions", []))
-            ),
-        }
-
-        doc["webUrl"] = item.get("asset", {}).get("url")
-
-        # Check for shareLinks and use the first one's URL as webUrl if available
-        if self.configuration.get("use_share_links"):
-            share_links = item.get("shareLinks", [])
-            if share_links and isinstance(share_links, list) and len(share_links) > 0:
-                doc["webUrl"] = share_links[0].get("url")
-
-        # Store the original download URL for the connector to use
-        doc["_original_download_url"] = item.get("asset", {}).get("downloadUrl")
-
-        return doc
