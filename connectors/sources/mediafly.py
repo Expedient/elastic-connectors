@@ -143,34 +143,6 @@ class MediaflyClient:
             return None
         return resp
 
-    async def get_incremental_changes(self, folder_id: str, last_sync_time: str) -> List[Dict[str, Any]]:
-        """
-        Retrieve incremental changes for a given folder since the last sync time.
-
-        Args:
-            folder_id (str): The ID of the folder to check for changes.
-            last_sync_time (str): The timestamp of the last sync.
-
-        Returns:
-            List[Dict[str, Any]]: A list of changed items.
-        """
-        url = f"{self.base_url}/items/{folder_id}"
-        params = {"productId": self.product_id, "recursive": "true"}
-        async with self.session.get(url, params=params, headers=self.headers) as resp:
-            if resp.status != 200:
-                print_message(
-                    "error", f"Error fetching items for folder {folder_id}: {resp.status} - {await resp.text()}"
-                )
-                return []
-
-            data = await resp.json()
-            folder_items = data.get("response", {}).get("items", [])
-
-            # Filter items based on last_sync_time
-            filtered_items = [item for item in folder_items if item.get("modified", "") > last_sync_time]
-
-            return filtered_items
-
 
 class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
     """
@@ -441,3 +413,4 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
         doc["_original_download_url"] = item.get("asset", {}).get("downloadUrl")
 
         return doc
+
