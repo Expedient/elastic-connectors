@@ -5,12 +5,29 @@ This module provides a connector to index Mediafly content into Elastic Enterpri
 It includes classes for interacting with the Mediafly API and processing Mediafly items.
 """
 
+import logging
 from functools import partial
 from typing import Any, Dict, List, Optional, AsyncGenerator
 import aiohttp
 from connectors.source import BaseDataSource
 from connectors.logger import logger
 from connectors.utils import TIKA_SUPPORTED_FILETYPES
+
+LOG_LEVEL = "DEBUG"
+logger.setLevel(getattr(logging, LOG_LEVEL, logging.DEBUG))
+
+# Add a console handler if not already added
+if LOG_LEVEL == "DEBUG":
+    if not logger.hasHandlers():
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.DEBUG)  # Ensure the handler level is set to DEBUG
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+    else:
+        # Ensure existing handlers are set to DEBUG
+        for handler in logger.handlers:
+            handler.setLevel(logging.DEBUG)
 
 FILE_WRITE_CHUNK_SIZE = 1024 * 64
 
@@ -86,6 +103,7 @@ class MediaflyClient:
             if resp.status != 200:
                 print_message("error", f"Error getting item {item_id}: {resp.status} - {await resp.text()}")
                 return {}
+            print_message("debug", f"Item {item_id} retrieved: {await resp.json()}")
             return await resp.json()
 
     async def get_child_items(self, item_id: str) -> List[Dict[str, Any]]:
@@ -293,10 +311,10 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
                 # Yield data chunks directly
                 async for chunk in response.content.iter_chunked(FILE_WRITE_CHUNK_SIZE):
                     yield chunk
-            except aiohttp.ClientError as e:
-                print_message("exception", f"Network error downloading item {file_id}: {e}")
             except aiohttp.ClientResponseError as e:
                 print_message("exception", f"HTTP error downloading item {file_id}: {e.status} - {e.message}")
+            except aiohttp.ClientError as e:
+                print_message("exception", f"Network error downloading item {file_id}: {e}")
 
         # Use the download_func directly without generic_chunked_download_func
         extracted_doc = await self.download_and_extract_file(document, filename, file_extension, download_func)
@@ -349,11 +367,12 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
         """
         filename = asset.get("filename", "")
         file_extension = self.get_file_extension(filename)
+
         if file_extension.lower() not in TIKA_SUPPORTED_FILETYPES:
             print_message("debug", f"Skipping {filename} as it is not TIKA-supported.")
             return False
 
-        if file_extension.lower() in self.exclude_file_types:
+        if file_extension.lower().strip(".") in self.exclude_file_types:
             print_message("debug", f"Skipping {filename} as it is in the excluded file types.")
             return False
 
@@ -413,4 +432,3 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
         doc["_original_download_url"] = item.get("asset", {}).get("downloadUrl")
 
         return doc
-
