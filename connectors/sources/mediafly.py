@@ -345,6 +345,7 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
                 asset = item.get("asset", {})
                 asset["id"] = item.get("id")
                 asset["modified"] = item.get("modified")
+                asset["internalOnly"] = item.get("metadata", {}).get("internalOnly", False)
 
                 if not self._pre_checks_for_get_docs(asset):
                     continue
@@ -367,6 +368,12 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
         """
         filename = asset.get("filename", "")
         file_extension = self.get_file_extension(filename)
+
+        if not self.include_internal_only_files and asset.get("internalOnly", True):
+            print_message(
+                "debug", f"Skipping {filename} as it is internal-only and include_internal_only_files is False."
+            )
+            return False
 
         if file_extension.lower() not in TIKA_SUPPORTED_FILETYPES:
             print_message("debug", f"Skipping {filename} as it is not TIKA-supported.")
