@@ -335,7 +335,13 @@ class NASDataSource(BaseDataSource):
         self.drive_path = self.configuration["drive_path"]
         self.drive_type = self.configuration["drive_type"]
         self.identity_mappings = self.configuration["identity_mappings"]
-        self.security_info = SecurityInfo(self.username, self.password, self.server_ip)
+        if self.configuration["windows_adinfo_server"]:
+            self.adinfo_server = self.configuration["windows_adinfo_server"]
+        else:
+            self.adinfo_server = self.server_ip
+        self.security_info = SecurityInfo(
+            self.username, self.password, self.adinfo_server
+        )
 
     def advanced_rules_validators(self):
         return [NetworkDriveAdvancedRulesValidator(self)]
@@ -402,13 +408,25 @@ class NASDataSource(BaseDataSource):
                 "ui_restrictions": ["advanced"],
                 "value": WINDOWS,
             },
+            "windows_adinfo_server": {
+                "label": "Alternative Windows AD info server",
+                "depends_on": [
+                    {"field": "use_document_level_security", "value": True},
+                    {"field": "drive_type", "value": WINDOWS},
+                ],
+                "order": 8,
+                "tooltip": "When using an SMB share provided by a non-windows server, this option allows you to specify an alternative server that has access to the required group membership information to populate the DLS info",
+                "type": "str",
+                "required": False,
+                "ui_restrictions": ["advanced"],
+            },
             "identity_mappings": {
                 "label": "Path of CSV file containing users and groups SID (For Linux Network Drive)",
                 "depends_on": [
                     {"field": "use_document_level_security", "value": True},
                     {"field": "drive_type", "value": LINUX},
                 ],
-                "order": 8,
+                "order": 9,
                 "type": "str",
                 "required": False,
                 "ui_restrictions": ["advanced"],
@@ -416,7 +434,7 @@ class NASDataSource(BaseDataSource):
             "use_text_extraction_service": {
                 "display": "toggle",
                 "label": "Use text extraction service",
-                "order": 9,
+                "order": 10,
                 "tooltip": "Requires a separate deployment of the Elastic Text Extraction Service. Requires that pipeline settings disable text extraction.",
                 "type": "bool",
                 "ui_restrictions": ["advanced"],
