@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, AsyncGenerator
 import aiohttp
 from connectors.source import BaseDataSource
 from connectors.logger import logger
-from connectors.utils import TIKA_SUPPORTED_FILETYPES
+from connectors.utils import TIKA_SUPPORTED_FILETYPES, retryable, RetryStrategy
 
 LOG_LEVEL = "INFO"
 logger.setLevel(getattr(logging, LOG_LEVEL, logging.DEBUG))
@@ -29,6 +29,8 @@ if LOG_LEVEL == "DEBUG":
         for handler in logger.handlers:
             handler.setLevel(logging.DEBUG)
 
+RETRIES = 3
+RETRY_INTERVAL = 2
 FILE_WRITE_CHUNK_SIZE = 1024 * 64
 MAX_CONCURRENT_DOWNLOADS = 50
 
@@ -63,6 +65,10 @@ def print_message(level: str, message: str):
         "error": logger.error,
         "exception": logger.exception,
     }[level](message)
+
+
+class NotFound(Exception):
+    pass
 
 
 class MediaflyClient:
@@ -140,6 +146,12 @@ class MediaflyClient:
 
         return items
 
+    @retryable(
+        retries=RETRIES,
+        interval=RETRY_INTERVAL,
+        strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+        skipped_exceptions=NotFound,
+    )
     async def download_item(self, attachment: Dict[str, Any]) -> Optional[aiohttp.ClientResponse]:
         """
         Download the content of a Mediafly item.
