@@ -29,7 +29,7 @@ jobs:
         pip install -r requirements/tests.txt
     - name: Run unit tests
       run: |
-        pytest -v tests/sources/test_mediafly.py 
+        PYTHONPATH=./ pytest -v tests/sources/test_mediafly.py
     - name: Build application
       run: |
         echo "Building application..."
