@@ -106,18 +106,22 @@ class MediaflyClient:
             print_message("debug", f"Item {item_id} retrieved: {await resp.json()}")
             return await resp.json()
 
-    async def get_child_items(self, item_id: str) -> List[Dict[str, Any]]:
+    async def get_child_items(self, item_id: str, exclude_folder_ids: List[str] = []) -> List[Dict[str, Any]]:
         """
         Retrieve all child items of a given item (folder) recursively.
 
         Args:
             item_id (str): The ID of the parent item.
-
+            exclude_folder_ids (List[str]) optional: A list of folder IDs to exclude from the results.
         Returns:
             List[Dict[str, Any]]: A list of child items.
         """
         items = []
+        if item_id in exclude_folder_ids:
+            print_message("debug", f"Skipping folder ID: {item_id} as it is in the exclude list.")
+            return items
         item = await self.get_item(item_id)
+
         print_message("debug", f"Processing folder ID: {item_id}")
 
         # Check if the current item is a folder
@@ -125,7 +129,7 @@ class MediaflyClient:
             for child in item.get("response", {}).get("items", []):
                 if child.get("type") == "folder":
                     print_message("debug", f"Found subfolder: {child.get('name', '')} (ID: {child.get('id', '')})")
-                    items.extend(await self.get_child_items(child["id"]))
+                    items.extend(await self.get_child_items(child["id"], exclude_folder_ids))
                 else:
                     print_message("debug", f"Found item: {child.get('name', '')} (ID: {child.get('id', '')})")
                     items.append(child)

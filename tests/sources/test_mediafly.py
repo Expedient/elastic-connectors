@@ -115,7 +115,6 @@ MOCK_MEDIAFLY_FOLDER_2 = {
 }
 MOCK_MEDIAFLY_FOLDER_2_WITH_ITEMS = {
     **MOCK_MEDIAFLY_FOLDER_2,
-    "id": "222225",
     "items": MOCK_MEDIAFLY_CHILD_ITEMS_2,
 }
 
@@ -158,6 +157,7 @@ async def create_mediafly_source(use_text_extraction_service=False, exclude_file
         product_id="product_id_123",
         folder_ids=["123456"],
         exclude_file_types=[],
+        exclude_folder_ids=[],
         include_internal_only_files=False,
         use_text_extraction_service=use_text_extraction_service,
     ) as source:
@@ -266,6 +266,59 @@ class TestMediaflyClient:
 
         # Call the method you want to test
         items = await client.get_child_items("folder_id")
+
+        # Assert the expected outcome
+        assert len(items) == 3
+        assert items[0]["id"] == "111222"
+        assert items[1]["id"] == "111223"
+        assert items[2]["id"] == "111224"
+
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_get_child_items_exclude_folder_id(self):
+        client = MediaflyClient("api_key_123", "product_id_123")
+
+        # Define a side effect function for the mock
+        async def mock_get_item(item_id):
+            if item_id == "222224":
+                return {"response": MOCK_MEDIAFLY_MULTIPLE_NESTED_FOLDERS}
+            elif item_id == "222221":  # ID of the nested folder
+                return {"response": MOCK_MEDIAFLY_FOLDER_WITH_ITEMS}
+            elif item_id == "222223":
+                return {"response": MOCK_MEDIAFLY_FOLDER_2_WITH_ITEMS}
+            return {"response": {}}
+
+        # Set the side effect for the mock
+        client.get_item = AsyncMock(side_effect=mock_get_item)
+        exclude_folder_ids = ["222223", "222221"]
+        # Call the method you want to test
+        items = await client.get_child_items("222224", exclude_folder_ids)
+
+        # Assert the expected outcome
+        assert len(items) == 0
+
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_get_child_items_exclude_multiple_folder_ids(self):
+        client = MediaflyClient("api_key_123", "product_id_123")
+
+        # Define a side effect function for the mock
+        async def mock_get_item(item_id):
+            if item_id == "222224":
+                return {"response": MOCK_MEDIAFLY_MULTIPLE_NESTED_FOLDERS}
+            elif item_id == "222221":  # ID of the nested folder
+                return {"response": MOCK_MEDIAFLY_FOLDER_WITH_ITEMS}
+            elif item_id == "222223":
+                return {"response": MOCK_MEDIAFLY_FOLDER_2_WITH_ITEMS}
+            return {"response": {}}
+
+        # Set the side effect for the mock
+        client.get_item = AsyncMock(side_effect=mock_get_item)
+        exclude_folder_ids = ["222223"]
+        # Call the method you want to test
+        items = await client.get_child_items("222224", exclude_folder_ids)
 
         # Assert the expected outcome
         assert len(items) == 3
