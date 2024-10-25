@@ -6,6 +6,7 @@ from connectors.sources.mediafly import MediaflyClient, MediaflyDataSource
 from contextlib import asynccontextmanager
 from tests.sources.support import create_source
 from aioresponses.core import normalize_url
+from connectors.source import DataSourceConfiguration
 
 MOCK_MEDIAFLY_ITEM_TXT = {
     "id": "111222",
@@ -150,14 +151,14 @@ def mock_mediafly_client():
 
 
 @asynccontextmanager
-async def create_mediafly_source(use_text_extraction_service=False, exclude_file_types=None):
+async def create_mediafly_source(use_text_extraction_service=False):
     async with create_source(
         MediaflyDataSource,
         api_key="api_key_123",
         product_id="product_id_123",
-        folder_ids=["123456"],
-        exclude_file_types=[],
-        exclude_folder_ids=[],
+        folder_ids=[123456],
+        exclude_file_types="",
+        exclude_folder_ids="",
         include_internal_only_files=False,
         use_text_extraction_service=use_text_extraction_service,
     ) as source:
@@ -358,11 +359,54 @@ class TestMediaflyDataSource:
             async with create_mediafly_source() as source:
                 assert source.api_key == "api_key_123"
                 assert source.product_id == "product_id_123"
-                assert source.folder_ids == ["123456"]
+                assert source.folder_ids == [123456]
                 assert source.exclude_file_types == []
                 assert source.exclude_folder_ids == []
                 assert source.include_internal_only_files == False
                 assert source.use_text_extraction_service == False
+
+    @pytest.mark.asyncio
+    async def test_init_array_conversion(self):
+        with patch(
+            "connectors.content_extraction.ContentExtraction.get_extraction_config",
+            return_value={"host": "http://localhost:8090"},
+        ):
+            # Create a configuration dictionary
+            config_dict = {
+                "exclude_file_types": "mp4,pptx",
+                "exclude_folder_ids": "111, 222 ",
+            }
+
+            # Initialize the MediaflyDataSource with the configuration
+            source = MediaflyDataSource(configuration=DataSourceConfiguration(config_dict))
+
+            # Debugging output
+            print(f"include_internal_only_files: {source.include_internal_only_files}")
+
+            # Assert that the configuration values are correctly converted
+            assert source.exclude_file_types == ["mp4", "pptx"]
+            assert source.exclude_folder_ids == ["111", "222"]
+
+    async def test_init_array_conversion_empty_values(self):
+        with patch(
+            "connectors.content_extraction.ContentExtraction.get_extraction_config",
+            return_value={"host": "http://localhost:8090"},
+        ):
+            # Create a configuration dictionary
+            config_dict = {
+                "exclude_file_types": "",
+                "exclude_folder_ids": "",
+            }
+
+            # Initialize the MediaflyDataSource with the configuration
+            source = MediaflyDataSource(configuration=DataSourceConfiguration(config_dict))
+
+            # Debugging output
+            print(f"include_internal_only_files: {source.include_internal_only_files}")
+
+            # Assert that the configuration values are correctly converted
+            assert source.exclude_file_types == []
+            assert source.exclude_folder_ids == []
 
     @pytest.mark.asyncio
     async def test_ping(self):
@@ -522,7 +566,7 @@ class TestMediaflyDataSource:
             assert docs[0]["name"] == MOCK_MEDIAFLY_ITEM_PPTX.get("metadata", {}).get("title")
 
             # Assert that get_child_items was called with each folder_id
-            client.get_child_items.assert_any_call("123456", [])
+            client.get_child_items.assert_any_call(123456, [])
 
             # Assert that get_child_items was called exactly once
             assert client.get_child_items.call_count == 1
@@ -548,7 +592,7 @@ class TestMediaflyDataSource:
                 docs.append(doc)
 
             # Assert that get_child_items was called with each folder_id
-            client.get_child_items.assert_any_call("123456", ["222221"])
+            client.get_child_items.assert_any_call(123456, ["222221"])
 
             # Assert that get_child_items was called exactly once
             assert client.get_child_items.call_count == 1
@@ -586,7 +630,7 @@ class TestMediaflyDataSource:
             assert docs[1]["name"] == MOCK_MEDIAFLY_ITEM_PPTX.get("metadata", {}).get("title")
 
             # Assert that get_child_items was called with each folder_id
-            client.get_child_items.assert_any_call("123456", [])
+            client.get_child_items.assert_any_call(123456, [])
 
             # Assert that get_child_items was called exactly once
             assert client.get_child_items.call_count == 1
@@ -711,6 +755,16 @@ class TestMediaflyDataSource:
             source.include_internal_only_files = True
 
             assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_TXT["asset"])
+            assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PPTX["asset"])
+            assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PNG["asset"])
+
+    @pytest.mark.asyncio
+    async def test__pre_checks_for_get_docs_with_excluded_file_types_all_files(self):
+        async with create_mediafly_source() as source:
+            source.exclude_file_types = ["txt", "pptx"]
+            source.include_internal_only_files = True
+
+            assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_TXT["asset"])
             assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PPTX["asset"])
             assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PNG["asset"])
 

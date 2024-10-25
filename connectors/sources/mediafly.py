@@ -180,8 +180,16 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
         self.api_key = self.configuration["api_key"]
         self.product_id = self.configuration["product_id"]
         self.folder_ids = self.configuration["folder_ids"]
-        self.exclude_file_types = self.configuration["exclude_file_types"]
-        self.exclude_folder_ids = self.configuration["exclude_folder_ids"]
+        self.exclude_file_types = (
+            [x.strip() for x in self.configuration["exclude_file_types"].split(",")]
+            if self.configuration["exclude_file_types"]
+            else []
+        )
+        self.exclude_folder_ids = (
+            [x.strip() for x in self.configuration["exclude_folder_ids"].split(",")]
+            if self.configuration["exclude_folder_ids"]
+            else []
+        )
         self.include_internal_only_files = self.configuration.get("include_internal_only_files", False)
         self.use_text_extraction_service = self.configuration.get("use_text_extraction_service", False)
         self.tika_supported_filetypes = TIKA_SUPPORTED_FILETYPES
@@ -213,6 +221,7 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
             },
             "folder_ids": {
                 "label": "Folder IDs",
+                "tooltip": "The IDs of the folders to index. Separate multiple IDs with commas.",
                 "order": 3,
                 "type": "list",
                 "value": [],
@@ -220,15 +229,18 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
             },
             "exclude_file_types": {
                 "label": "Exclude file types",
+                "tooltip": "The file types to exclude from indexing. Separate multiple types with commas.",
                 "order": 4,
-                "type": "list",
-                "value": [],
+                "type": "str",
+                "value": "",
             },
             "exclude_folder_ids": {
                 "label": "Exclude folder IDs",
+                "tooltip": "The IDs of the folders to exclude from indexing. Separate multiple IDs with commas.",
                 "order": 5,
-                "type": "list",
-                "value": [],
+                "type": "str",
+                "value": "",
+                "required": False,
             },
             "use_share_links": {
                 "display": "toggle",
