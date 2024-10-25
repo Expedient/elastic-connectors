@@ -13,7 +13,7 @@ from connectors.source import BaseDataSource
 from connectors.logger import logger
 from connectors.utils import TIKA_SUPPORTED_FILETYPES
 
-LOG_LEVEL = "DEBUG"
+LOG_LEVEL = "INFO"
 logger.setLevel(getattr(logging, LOG_LEVEL, logging.DEBUG))
 
 # Add a console handler if not already added
@@ -30,6 +30,7 @@ if LOG_LEVEL == "DEBUG":
             handler.setLevel(logging.DEBUG)
 
 FILE_WRITE_CHUNK_SIZE = 1024 * 64
+MAX_CONCURRENT_DOWNLOADS = 50
 
 # Define global flags for log message length
 LOG_LENGTH_DEBUG = None  # Set to an integer to truncate debug messages
@@ -260,10 +261,20 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
                 "ui_restrictions": ["advanced"],
                 "value": False,
             },
+            "concurrent_downloads": {
+                "default_value": MAX_CONCURRENT_DOWNLOADS,
+                "display": "numeric",
+                "label": "Maximum concurrent downloads",
+                "order": 8,
+                "required": False,
+                "type": "int",
+                "ui_restrictions": ["advanced"],
+                "validations": [{"type": "less_than", "constraint": MAX_CONCURRENT_DOWNLOADS + 1}],
+            },
             "use_text_extraction_service": {
                 "display": "toggle",
                 "label": "Use text extraction service",
-                "order": 8,
+                "order": 9,
                 "tooltip": "Requires a separate deployment of the Elastic Text Extraction Service.",
                 "type": "bool",
                 "ui_restrictions": ["advanced"],
