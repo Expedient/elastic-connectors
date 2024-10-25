@@ -25,7 +25,6 @@ MOCK_MEDIAFLY_ITEM_TXT = {
     "shareLinks": [],
     "fileType": "txt",
 }
-
 MOCK_MEDIAFLY_ITEM_PPTX = {
     "id": "111223",
     "parentId": "654321",
@@ -60,7 +59,6 @@ MOCK_MEDIAFLY_ITEM_PNG = {
     "shareLinks": [],
     "fileType": "png",
 }
-
 MOCK_MEDIAFLY_ITEM_PDF = {
     "id": "111225",
     "parentId": "654321",
@@ -84,6 +82,8 @@ MOCK_MEDIAFLY_CHILD_ITEMS = [
     MOCK_MEDIAFLY_ITEM_PPTX,
     MOCK_MEDIAFLY_ITEM_PNG,
 ]
+MOCK_MEDIAFLY_CHILD_ITEMS_2 = [MOCK_MEDIAFLY_ITEM_PDF]
+
 
 MOCK_MEDIAFLY_FOLDER = {
     "id": "222221",
@@ -101,18 +101,22 @@ MOCK_MEDIAFLY_FOLDER = {
     "shareLinks": [],
     "fileType": "folder",
 }
+MOCK_MEDIAFLY_FOLDER_WITH_ITEMS = {
+    **MOCK_MEDIAFLY_FOLDER,
+    "items": MOCK_MEDIAFLY_CHILD_ITEMS,
+}
 
-MOCK_MEDIAFLY_FOLDER_ALTERNATE = {
+MOCK_MEDIAFLY_FOLDER_2 = {
     **MOCK_MEDIAFLY_FOLDER,
     "id": "222223",
     "metadata": {"title": "Mediafly's Test 2"},
     "itemCount": 1,
     "fileCount": 1,
 }
-
-MOCK_MEDIAFLY_FOLDER_WITH_ITEMS = {
-    **MOCK_MEDIAFLY_FOLDER,
-    "items": MOCK_MEDIAFLY_CHILD_ITEMS,
+MOCK_MEDIAFLY_FOLDER_2_WITH_ITEMS = {
+    **MOCK_MEDIAFLY_FOLDER_2,
+    "id": "222225",
+    "items": MOCK_MEDIAFLY_CHILD_ITEMS_2,
 }
 
 MOCK_MEDIAFLY_NESTED_FOLDER = {
@@ -135,7 +139,8 @@ MOCK_MEDIAFLY_NESTED_FOLDER = {
 
 MOCK_MEDIAFLY_MULTIPLE_NESTED_FOLDERS = {
     **MOCK_MEDIAFLY_NESTED_FOLDER,
-    "items": [MOCK_MEDIAFLY_FOLDER, MOCK_MEDIAFLY_FOLDER_ALTERNATE],
+    "id": "222224",
+    "items": [MOCK_MEDIAFLY_FOLDER, MOCK_MEDIAFLY_FOLDER_2],
 }
 
 
