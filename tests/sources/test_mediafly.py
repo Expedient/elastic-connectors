@@ -77,6 +77,23 @@ MOCK_MEDIAFLY_ITEM_PDF = {
     "shareLinks": [],
     "fileType": "pdf",
 }
+MOCK_MEDIAFLY_ITEM_SVG = {
+    "id": "111226",
+    "parentId": "654321",
+    "type": "file",
+    "modified": "2024-10-20T18:26:23.000000Z",
+    "created": "2024-10-20T18:26:06.000000Z",
+    "createdBy": "another_person@example.com",
+    "modifiedBy": "another_person@example.com",
+    "asset": {
+        "id": "abc127",
+        "filename": "image_file.svg",
+        "size": 1025,
+        "downloadUrl": "https://localhost/image_file.svg",
+    },
+    "shareLinks": [],
+    "fileType": "svg",
+}
 
 MOCK_MEDIAFLY_CHILD_ITEMS = [
     MOCK_MEDIAFLY_ITEM_TXT,
@@ -747,6 +764,7 @@ class TestMediaflyDataSource:
             assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_TXT["asset"])
             assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PPTX["asset"])
             assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PNG["asset"])
+            assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_SVG["asset"])
 
     @pytest.mark.asyncio
     async def test__pre_checks_for_get_docs_with_excluded_file_types(self):
@@ -757,6 +775,7 @@ class TestMediaflyDataSource:
             assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_TXT["asset"])
             assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PPTX["asset"])
             assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PNG["asset"])
+            assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_SVG["asset"])
 
     @pytest.mark.asyncio
     async def test__pre_checks_for_get_docs_with_excluded_file_types_all_files(self):
@@ -767,6 +786,7 @@ class TestMediaflyDataSource:
             assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_TXT["asset"])
             assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PPTX["asset"])
             assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PNG["asset"])
+            assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_SVG["asset"])
 
 
 if __name__ == "__main__":
