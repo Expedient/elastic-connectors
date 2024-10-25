@@ -181,6 +181,7 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
         self.product_id = self.configuration["product_id"]
         self.folder_ids = self.configuration["folder_ids"]
         self.exclude_file_types = self.configuration["exclude_file_types"]
+        self.exclude_folder_ids = self.configuration["exclude_folder_ids"]
         self.include_internal_only_files = self.configuration.get("include_internal_only_files", False)
         self.use_text_extraction_service = self.configuration.get("use_text_extraction_service", False)
         self.tika_supported_filetypes = TIKA_SUPPORTED_FILETYPES
@@ -221,20 +222,18 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
                 "label": "Exclude file types",
                 "order": 4,
                 "type": "list",
-                "value": [
-                    "mp4",
-                    "mp3",
-                    "wav",
-                    "m4a",
-                    "m4v",
-                    "mov",
-                    "wmv",
-                ],
+                "value": [],
+            },
+            "exclude_folder_ids": {
+                "label": "Exclude folder IDs",
+                "order": 5,
+                "type": "list",
+                "value": [],
             },
             "use_share_links": {
                 "display": "toggle",
                 "label": "Use share links",
-                "order": 5,
+                "order": 6,
                 "tooltip": "Use share links when available to access files instead of the direct download URL.",
                 "type": "bool",
                 "ui_restrictions": ["advanced"],
@@ -243,7 +242,7 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
             "include_internal_only_files": {
                 "display": "toggle",
                 "label": "Include internal-only files",
-                "order": 6,
+                "order": 7,
                 "tooltip": "Include files marked as internal-only in the Mediafly environment.",
                 "type": "bool",
                 "ui_restrictions": ["advanced"],
@@ -252,7 +251,7 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
             "use_text_extraction_service": {
                 "display": "toggle",
                 "label": "Use text extraction service",
-                "order": 7,
+                "order": 8,
                 "tooltip": "Requires a separate deployment of the Elastic Text Extraction Service.",
                 "type": "bool",
                 "ui_restrictions": ["advanced"],
@@ -341,7 +340,7 @@ class MediaflyDataSource(BaseDataSource):  # pylint: disable=abstract-method
         """
         for folder_id in self.folder_ids:
             print_message("info", f"Processing folder ID: {folder_id}")
-            items = await self.client.get_child_items(folder_id)
+            items = await self.client.get_child_items(folder_id, self.exclude_folder_ids)
             for item in items:
                 doc = self._create_doc_from_item(item)
 

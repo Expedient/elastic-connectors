@@ -360,6 +360,7 @@ class TestMediaflyDataSource:
                 assert source.product_id == "product_id_123"
                 assert source.folder_ids == ["123456"]
                 assert source.exclude_file_types == []
+                assert source.exclude_folder_ids == []
                 assert source.include_internal_only_files == False
                 assert source.use_text_extraction_service == False
 
@@ -521,7 +522,33 @@ class TestMediaflyDataSource:
             assert docs[0]["name"] == MOCK_MEDIAFLY_ITEM_PPTX.get("metadata", {}).get("title")
 
             # Assert that get_child_items was called with each folder_id
-            client.get_child_items.assert_any_call("123456")
+            client.get_child_items.assert_any_call("123456", [])
+
+            # Assert that get_child_items was called exactly once
+            assert client.get_child_items.call_count == 1
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_get_docs_exclude_folder_ids(self):
+        # Create a mock MediaflyClient
+        client = MediaflyClient("api_key_123", "product_id_123")
+
+        # Mock the get_child_items method
+        client.get_child_items = AsyncMock(return_value=MOCK_MEDIAFLY_CHILD_ITEMS)
+
+        # Use the create_mediafly_source fixture to create a source
+        async with create_mediafly_source() as source:
+            # Set the client in the source
+            source.client = client
+            source.exclude_folder_ids = ["222221"]
+
+            # Collect the documents yielded by get_docs
+            docs = []
+            async for doc, _ in source.get_docs():
+                docs.append(doc)
+
+            # Assert that get_child_items was called with each folder_id
+            client.get_child_items.assert_any_call("123456", ["222221"])
 
             # Assert that get_child_items was called exactly once
             assert client.get_child_items.call_count == 1
@@ -559,7 +586,7 @@ class TestMediaflyDataSource:
             assert docs[1]["name"] == MOCK_MEDIAFLY_ITEM_PPTX.get("metadata", {}).get("title")
 
             # Assert that get_child_items was called with each folder_id
-            client.get_child_items.assert_any_call("123456")
+            client.get_child_items.assert_any_call("123456", [])
 
             # Assert that get_child_items was called exactly once
             assert client.get_child_items.call_count == 1
@@ -600,8 +627,8 @@ class TestMediaflyDataSource:
                 assert docs[i]["name"] == MOCK_MEDIAFLY_ITEM_PPTX.get("metadata", {}).get("title")
 
             # Assert that get_child_items was called with each folder_id
-            client.get_child_items.assert_any_call("222221")
-            client.get_child_items.assert_any_call("222222")
+            client.get_child_items.assert_any_call("222221", [])
+            client.get_child_items.assert_any_call("222222", [])
 
             # Assert that get_child_items was called exactly twice
             assert client.get_child_items.call_count == 2
