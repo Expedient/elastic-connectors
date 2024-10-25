@@ -591,10 +591,29 @@ class TestMediaflyDataSource:
 
     @pytest.mark.asyncio
     async def test__pre_checks_for_get_docs(self):
+        # This test is different from the others because it would randomly fail
         async with create_mediafly_source() as source:
-            assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_TXT["asset"])
-            assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PPTX["asset"])
-            assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PNG["asset"])
+            source.include_internal_only_files = False
+            source.exclude_file_types = ["pptx"]
+
+            # Test with internal-only file (should be skipped)
+            internal_asset = {**MOCK_MEDIAFLY_ITEM_TXT["asset"], "internalOnly": True}
+            assert not source._pre_checks_for_get_docs(internal_asset)
+
+            # Test with non-internal file (should pass)
+            non_internal_asset = {**MOCK_MEDIAFLY_ITEM_TXT["asset"], "internalOnly": False}
+            assert source._pre_checks_for_get_docs(non_internal_asset)
+
+            # Test with excluded file type
+            pptx_asset = {**MOCK_MEDIAFLY_ITEM_PPTX["asset"], "internalOnly": False}
+            assert not source._pre_checks_for_get_docs(pptx_asset)
+
+            # Test with non-TIKA supported file type
+            png_asset = {**MOCK_MEDIAFLY_ITEM_PNG["asset"], "internalOnly": False}
+            assert not source._pre_checks_for_get_docs(png_asset)
+            # assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_TXT["asset"])
+            # assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PPTX["asset"])
+            # assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PNG["asset"])
 
     @pytest.mark.asyncio
     async def test__pre_checks_for_get_docs_with_include_internal_only_files(self):
