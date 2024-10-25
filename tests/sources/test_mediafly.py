@@ -60,6 +60,24 @@ MOCK_MEDIAFLY_ITEM_PNG = {
     "fileType": "png",
 }
 
+MOCK_MEDIAFLY_ITEM_PDF = {
+    "id": "111225",
+    "parentId": "654321",
+    "type": "file",
+    "modified": "2024-10-19T18:26:23.000000Z",
+    "created": "2024-10-19T18:26:06.000000Z",
+    "createdBy": "another_person@example.com",
+    "modifiedBy": "another_person@example.com",
+    "asset": {
+        "id": "abc126",
+        "filename": "pdf_file.pdf",
+        "size": 2048,
+        "downloadUrl": "https://localhost/pdf_file.pdf",
+    },
+    "shareLinks": [],
+    "fileType": "pdf",
+}
+
 MOCK_MEDIAFLY_CHILD_ITEMS = [
     MOCK_MEDIAFLY_ITEM_TXT,
     MOCK_MEDIAFLY_ITEM_PPTX,
@@ -81,6 +99,14 @@ MOCK_MEDIAFLY_FOLDER = {
     "permissions": [],
     "shareLinks": [],
     "fileType": "folder",
+}
+
+MOCK_MEDIAFLY_FOLDER_ALTERNATE = {
+    **MOCK_MEDIAFLY_FOLDER,
+    "id": "222223",
+    "metadata": {"title": "Mediafly's Test 2"},
+    "itemCount": 1,
+    "fileCount": 1,
 }
 
 MOCK_MEDIAFLY_FOLDER_WITH_ITEMS = {
@@ -106,6 +132,11 @@ MOCK_MEDIAFLY_NESTED_FOLDER = {
     "fileType": "folder",
 }
 
+MOCK_MEDIAFLY_MULTIPLE_NESTED_FOLDERS = {
+    **MOCK_MEDIAFLY_NESTED_FOLDER,
+    "items": [MOCK_MEDIAFLY_FOLDER, MOCK_MEDIAFLY_FOLDER_ALTERNATE],
+}
+
 
 @pytest.fixture
 def mock_mediafly_client():
@@ -119,8 +150,8 @@ async def create_mediafly_source(use_text_extraction_service=False, exclude_file
         MediaflyDataSource,
         api_key="api_key_123",
         product_id="product_id_123",
-        folder_ids=["123456", "654321"],
-        exclude_file_types=["mp4", "pptx"],
+        folder_ids=["123456"],
+        exclude_file_types=[],
         include_internal_only_files=False,
         use_text_extraction_service=use_text_extraction_service,
     ) as source:
@@ -268,8 +299,8 @@ class TestMediaflyDataSource:
             async with create_mediafly_source() as source:
                 assert source.api_key == "api_key_123"
                 assert source.product_id == "product_id_123"
-                assert source.folder_ids == ["123456", "654321"]
-                assert source.exclude_file_types == ["mp4", "pptx"]
+                assert source.folder_ids == ["123456"]
+                assert source.exclude_file_types == []
                 assert source.include_internal_only_files == False
                 assert source.use_text_extraction_service == False
 
@@ -416,7 +447,44 @@ class TestMediaflyDataSource:
         async with create_mediafly_source() as source:
             # Set the client in the source
             source.client = client
-            source.exclude_file_types = []
+
+            # Collect the documents yielded by get_docs
+            docs = []
+            async for doc, _ in source.get_docs():
+                docs.append(doc)
+
+            # Assert the expected number of documents
+            assert len(docs) == 2
+
+            # Verify the content of the documents
+            assert docs[0]["_id"] == MOCK_MEDIAFLY_ITEM_TXT["id"]
+            assert docs[0]["_timestamp"] == MOCK_MEDIAFLY_ITEM_TXT["modified"]
+            assert docs[0]["name"] == MOCK_MEDIAFLY_ITEM_TXT.get("metadata", {}).get("title")
+
+            assert docs[1]["_id"] == MOCK_MEDIAFLY_ITEM_PPTX["id"]
+            assert docs[1]["_timestamp"] == MOCK_MEDIAFLY_ITEM_PPTX["modified"]
+            assert docs[1]["name"] == MOCK_MEDIAFLY_ITEM_PPTX.get("metadata", {}).get("title")
+
+            # Assert that get_child_items was called with each folder_id
+            client.get_child_items.assert_any_call("123456")
+
+            # Assert that get_child_items was called exactly once
+            assert client.get_child_items.call_count == 1
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_get_docs_multiple_folders(self):
+        # Create a mock MediaflyClient
+        client = MediaflyClient("api_key_123", "product_id_123")
+
+        # Mock the get_child_items method
+        client.get_child_items = AsyncMock(return_value=MOCK_MEDIAFLY_CHILD_ITEMS)
+
+        # Use the create_mediafly_source fixture to create a source
+        async with create_mediafly_source() as source:
+            # Set the client in the source
+            source.client = client
+            source.folder_ids = ["222221", "222222"]
 
             # Collect the documents yielded by get_docs
             docs = []
@@ -431,10 +499,18 @@ class TestMediaflyDataSource:
                 assert docs[i]["_id"] == MOCK_MEDIAFLY_ITEM_TXT["id"]
                 assert docs[i]["_timestamp"] == MOCK_MEDIAFLY_ITEM_TXT["modified"]
                 assert docs[i]["name"] == MOCK_MEDIAFLY_ITEM_TXT.get("metadata", {}).get("title")
+
             for i in [1, 3]:
                 assert docs[i]["_id"] == MOCK_MEDIAFLY_ITEM_PPTX["id"]
                 assert docs[i]["_timestamp"] == MOCK_MEDIAFLY_ITEM_PPTX["modified"]
                 assert docs[i]["name"] == MOCK_MEDIAFLY_ITEM_PPTX.get("metadata", {}).get("title")
+
+            # Assert that get_child_items was called with each folder_id
+            client.get_child_items.assert_any_call("222221")
+            client.get_child_items.assert_any_call("222222")
+
+            # Assert that get_child_items was called exactly twice
+            assert client.get_child_items.call_count == 2
 
             await client.close()
 
@@ -475,16 +551,16 @@ class TestMediaflyDataSource:
     async def test__pre_checks_for_get_docs(self):
         async with create_mediafly_source() as source:
             assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_TXT["asset"])
-            assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PPTX["asset"])
+            assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PPTX["asset"])
             assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PNG["asset"])
 
     @pytest.mark.asyncio
-    async def test__pre_checks_for_get_docs_not_excluded(self):
+    async def test__pre_checks_for_get_docs_with_excluded_file_types(self):
         async with create_mediafly_source() as source:
-            source.exclude_file_types = []
+            source.exclude_file_types = ["mp4", "pptx"]
 
             assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_TXT["asset"])
-            assert source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PPTX["asset"])
+            assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PPTX["asset"])
             assert not source._pre_checks_for_get_docs(MOCK_MEDIAFLY_ITEM_PNG["asset"])
 
 
