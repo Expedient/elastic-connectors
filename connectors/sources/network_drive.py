@@ -14,6 +14,7 @@ import fastjsonschema
 import requests.exceptions
 import smbclient
 import winrm
+from ms_active_directory import ADDomain
 from smbprotocol.exceptions import (
     SMBConnectionClosed,
     SMBException,
@@ -256,6 +257,28 @@ class SecurityInfo:
         members = self.session.run_ps(GET_GROUP_MEMBERS.format(name=group_name))
 
         return self.parse_output(members)
+
+
+class ADSecurityInfo(SecurityInfo):
+    def __init__(self, username, password, server, domain):
+        super().__init__(username, password, server)
+        self.domain = domain
+
+    @cached_property
+    def session(self):
+        domain = ADDomain(self.domain)
+        session = domain.create_session_as_user(self.username, self.password)
+        return session
+
+    def find_user_by_id(self, sid):
+        return self.session.find_user_by_sid(sid, ["objectSid"])
+
+    def find_group_by_id(self, sid):
+        return self.session.find_group_by_sid(sid)
+
+    # Expects an ADGroup Object
+    def get_group_members(self, group):
+        return self.session.find_members_of_group_recursive(group)
 
 
 class SMBSession:
@@ -857,6 +880,66 @@ class NASDataSource(BaseDataSource):
             else:
                 # Else the RID corresponds to a user, hence we use it directly.
                 permissions = [_prefix_rid(rid)]
+
+            if (
+                ace_type == ACCESS_ALLOWED_TYPE
+                or mask == ACCESS_MASK_DENIED_WRITE_PERMISSION
+            ):
+                allow_permissions.extend(permissions)
+
+            if (
+                ace_type == ACCESS_DENIED_TYPE
+                and mask != ACCESS_MASK_DENIED_WRITE_PERMISSION
+            ):
+                deny_permissions.extend(permissions)
+
+        return allow_permissions, deny_permissions
+
+    async def get_entity_permission_ad(
+        self, file_path, file_type, domain, user_id, password
+    ):
+        """handles actually fetching user and group info from AD
+        function above only actually works on local machines"""
+        if not self._dls_enabled():
+            return []
+
+        security_info = ADSecurityInfo(user_id, password, self.server_ip, domain)
+        allow_permissions = []
+        deny_permissions = []
+        if file_type == "file":
+            list_permissions = await asyncio.to_thread(
+                self.list_file_permission,
+                file_path=file_path,
+                file_type="file",
+                mode="rb",
+                access=FilePipePrinterAccessMask.READ_CONTROL,
+            )
+        else:
+            list_permissions = await asyncio.to_thread(
+                self.list_file_permission,
+                file_path=file_path,
+                file_type="dir",
+                mode="br",
+                access=DirectoryAccessMask.READ_CONTROL,
+            )
+        for permission in list_permissions or []:
+            # Access mask indicates specific permission within an ACE, such as read in deny ACE.
+            mask = permission["mask"].value
+
+            # Determine the type of ACE (access control entry), i.e, allow or deny
+            ace_type = permission["ace_type"].value
+
+            # Find the group by it's SID
+            group_info = security_info.find_group_by_id(permission["sid"])
+            if group_info:
+                permissions = [
+                    _prefix_rid(member.all_attributes["objectSid"].split("-")[-1])
+                    for member in security_info.get_group_members(group_info)
+                ]
+            else:
+                rid = str(permission["sid"]).split("-")[-1]
+                permissions = [_prefix_rid(rid)]
+
             if (
                 ace_type == ACCESS_ALLOWED_TYPE
                 or mask == ACCESS_MASK_DENIED_WRITE_PERMISSION
