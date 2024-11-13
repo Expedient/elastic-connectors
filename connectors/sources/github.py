@@ -4,6 +4,7 @@
 # you may not use this file except in compliance with the Elastic License 2.0.
 #
 """GitHub source module responsible to fetch documents from GitHub Cloud and Server."""
+
 import json
 import time
 from enum import Enum
@@ -42,6 +43,7 @@ from connectors.utils import (
 
 WILDCARD = "*"
 BLOB = "blob"
+FILE = "file"
 GITHUB_CLOUD = "github_cloud"
 GITHUB_SERVER = "github_server"
 PERSONAL_ACCESS_TOKEN = "personal_access_token"  # noqa: S105
@@ -64,6 +66,14 @@ FILE_SCHEMA = {
     "type": "type",
     "path": "path",
     "mode": "mode",
+    "extension": "extension",
+    "_timestamp": "_timestamp",
+}
+PATH_SCHEMA = {
+    "name": "name",
+    "size": "size",
+    "type": "type",
+    "path": "path",
     "extension": "extension",
     "_timestamp": "_timestamp",
 }
@@ -624,6 +634,7 @@ class ObjectType(Enum):
     PULL_REQUEST = "Pull request"
     PR = "pr"
     BRANCH = "branch"
+    PATH = "path"
 
 
 class UnauthorizedException(Exception):
@@ -657,11 +668,13 @@ class GitHubClient:
             self.endpoints = {
                 "TREE": "/repos/{repo_name}/git/trees/{default_branch}?recursive=1",
                 "COMMITS": "/repos/{repo_name}/commits?path={path}",
+                "PATH": "/repos/{repo_name}/contents/{path}",
             }
         else:
             self.endpoints = {
                 "TREE": "/api/v3/repos/{repo_name}/git/trees/{default_branch}?recursive=1",
                 "COMMITS": "api/v3/repos/{repo_name}/commits?path={path}",
+                "PATH": "api/v3/repos/{repo_name}/contents/{path}",
             }
         if ssl_enabled and ssl_ca:
             self.ssl_ctx = ssl_context(certificate=ssl_ca)
@@ -1048,6 +1061,7 @@ class GitHubAdvancedRulesValidator(AdvancedRulesValidator):
                     ObjectType.ISSUE.value.lower(): {"type": "string", "minLength": 1},
                     ObjectType.PR.value: {"type": "string", "minLength": 1},
                     ObjectType.BRANCH.value: {"type": "string", "minLength": 1},
+                    ObjectType.PATH.value: {"type": "string", "minLength": 1},
                 },
                 "minProperties": 1,
                 "additionalProperties": False,
@@ -1347,7 +1361,7 @@ class GitHubDataSource(BaseDataSource):
             cached_repo = self.org_repos
         else:
             if owner not in self.user_repos:
-                # get repos for a user cna cached it in self.user_repos
+                # get repos for a user can cached it in self.user_repos
                 async for _ in self._get_personal_repos(owner):
                     pass
 
@@ -1871,6 +1885,31 @@ class GitHubDataSource(BaseDataSource):
         )
         return commit["commit"]["committer"]["date"]
 
+    async def _format_file_document(self, repo_object, repo_name, schema):
+        file_name = repo_object["path"].split("/")[-1]
+        file_extension = (
+            file_name[file_name.rfind(".") :] if "." in file_name else ""  # noqa
+        )
+        if file_extension.lower() in SUPPORTED_EXTENSION:
+            last_commit_timestamp = await self._fetch_last_commit_timestamp(
+                repo_name=repo_name, path=repo_object["path"]
+            )
+            repo_object.update(
+                {
+                    "_timestamp": last_commit_timestamp,
+                    "repo_name": repo_name,
+                    "name": file_name,
+                    "extension": file_extension,
+                }
+            )
+
+            document = self.adapt_gh_doc_to_es_doc(
+                github_document=repo_object, schema=schema
+            )
+
+            document["_id"] = f"{repo_name}/{repo_object['path']}"
+            return document, repo_object
+
     async def _fetch_files(self, repo_name, default_branch):
         self._logger.info(
             f"Fetching files from repo: '{repo_name}' (branch: '{default_branch}')"
@@ -1884,31 +1923,35 @@ class GitHubDataSource(BaseDataSource):
 
             for repo_object in file_tree.get("tree", []):
                 if repo_object["type"] == BLOB:
-                    file_name = repo_object["path"].split("/")[-1]
-                    file_extension = (
-                        file_name[file_name.rfind(".") :]  # noqa
-                        if "." in file_name
-                        else ""
-                    )
-                    if file_extension.lower() in SUPPORTED_EXTENSION:
-                        last_commit_timestamp = await self._fetch_last_commit_timestamp(
-                            repo_name=repo_name, path=repo_object["path"]
-                        )
-                        repo_object.update(
-                            {
-                                "_timestamp": last_commit_timestamp,
-                                "repo_name": repo_name,
-                                "name": file_name,
-                                "extension": file_extension,
-                            }
-                        )
+                    if document := await self._format_file_document(
+                        repo_object=repo_object, repo_name=repo_name, schema=FILE_SCHEMA
+                    ):
+                        yield document
+        except UnauthorizedException:
+            raise
+        except ForbiddenException:
+            raise
+        except Exception as exception:
+            self._logger.warning(
+                f"Something went wrong while fetching the files of {repo_name}. Exception: {exception}",
+                exc_info=True,
+            )
 
-                        document = self.adapt_gh_doc_to_es_doc(
-                            github_document=repo_object, schema=FILE_SCHEMA
-                        )
-
-                        document["_id"] = f"{repo_name}/{repo_object['path']}"
-                        yield document, repo_object
+    async def _fetch_files_by_path(self, repo_name, path):
+        self._logger.info(f"Fetching files from repo: '{repo_name}' (path: '{path}')")
+        try:
+            for repo_object in await self.github_client.get_github_item(
+                resource=self.github_client.endpoints["PATH"].format(
+                    repo_name=repo_name, path=path
+                )
+            ):  # pyright: ignore
+                if repo_object["type"] == FILE:
+                    if document := await self._format_file_document(
+                        repo_object=repo_object,
+                        repo_name=repo_name,
+                        schema=PATH_SCHEMA,
+                    ):
+                        yield document
         except UnauthorizedException:
             raise
         except ForbiddenException:
@@ -2090,8 +2133,27 @@ class GitHubDataSource(BaseDataSource):
                         repo_name=repo_name, default_branch=branch
                     ):
                         if file_document["type"] == BLOB:
-                            yield file_document, partial(
-                                self.get_content, attachment=attachment_metadata
+                            yield (
+                                file_document,
+                                partial(
+                                    self.get_content, attachment=attachment_metadata
+                                ),
+                            )
+                        else:
+                            yield file_document, None
+
+                if path := rule["filter"].get(ObjectType.PATH.value):
+                    async for (
+                        file_document,
+                        attachment_metadata,
+                    ) in self._fetch_files_by_path(repo_name=repo_name, path=path):
+                        if file_document["type"] == FILE:
+                            attachment_metadata["url"] = attachment_metadata["git_url"]
+                            yield (
+                                file_document,
+                                partial(
+                                    self.get_content, attachment=attachment_metadata
+                                ),
                             )
                         else:
                             yield file_document, None
@@ -2110,9 +2172,12 @@ class GitHubDataSource(BaseDataSource):
                     )
 
                 if needs_access_control:
-                    yield self._decorate_with_access_control(
-                        document=repo, access_control=access_control
-                    ), None
+                    yield (
+                        self._decorate_with_access_control(
+                            document=repo, access_control=access_control
+                        ),
+                        None,
+                    )
                 else:
                     yield repo, None
 
@@ -2128,9 +2193,12 @@ class GitHubDataSource(BaseDataSource):
                     response_key=[REPOSITORY_OBJECT, "pullRequests"],
                 ):
                     if needs_access_control:
-                        yield self._decorate_with_access_control(
-                            document=pull_request, access_control=access_control
-                        ), None
+                        yield (
+                            self._decorate_with_access_control(
+                                document=pull_request, access_control=access_control
+                            ),
+                            None,
+                        )
                     else:
                         yield pull_request, None
 
@@ -2138,9 +2206,12 @@ class GitHubDataSource(BaseDataSource):
                     repo_name=repo_name, response_key=[REPOSITORY_OBJECT, "issues"]
                 ):
                     if needs_access_control:
-                        yield self._decorate_with_access_control(
-                            document=issue, access_control=access_control
-                        ), None
+                        yield (
+                            self._decorate_with_access_control(
+                                document=issue, access_control=access_control
+                            ),
+                            None,
+                        )
                     else:
                         yield issue, None
 
@@ -2150,21 +2221,30 @@ class GitHubDataSource(BaseDataSource):
                     ):
                         if file_document["type"] == BLOB:
                             if needs_access_control:
-                                yield self._decorate_with_access_control(
-                                    document=file_document,
-                                    access_control=access_control,
-                                ), partial(
-                                    self.get_content, attachment=attachment_metadata
+                                yield (
+                                    self._decorate_with_access_control(
+                                        document=file_document,
+                                        access_control=access_control,
+                                    ),
+                                    partial(
+                                        self.get_content, attachment=attachment_metadata
+                                    ),
                                 )
                             else:
-                                yield file_document, partial(
-                                    self.get_content, attachment=attachment_metadata
+                                yield (
+                                    file_document,
+                                    partial(
+                                        self.get_content, attachment=attachment_metadata
+                                    ),
                                 )
                         else:
                             if needs_access_control:
-                                yield self._decorate_with_access_control(
-                                    document=file_document,
-                                    access_control=access_control,
-                                ), None
+                                yield (
+                                    self._decorate_with_access_control(
+                                        document=file_document,
+                                        access_control=access_control,
+                                    ),
+                                    None,
+                                )
                             else:
                                 yield file_document, None
