@@ -14,7 +14,8 @@ import fastjsonschema
 import requests.exceptions
 import smbclient
 import winrm
-from ms_active_directory import ADDomain
+from ms_active_directory import ADDomain, ADUser
+from msldap.commons.factory import LDAPConnectionFactory
 from smbprotocol.exceptions import (
     SMBConnectionClosed,
     SMBException,
@@ -100,6 +101,13 @@ def _prefix_user(user):
 
 def _prefix_rid(rid):
     return prefix_identity("rid", rid)
+
+
+def _extract_rid(user):
+    try:
+        return _prefix_rid(user.all_attributes["objectSid"].split("-")[-1])
+    except KeyError:
+        return None
 
 
 class InvalidRulesError(Exception):
@@ -270,6 +278,31 @@ class ADSecurityInfo(SecurityInfo):
         session = domain.create_session_as_user(self.username, self.password)
         return session
 
+    async def get_msldap_client(self):
+        """gets the msldap client
+        using this to get the full user list from AD since"""
+        short_username = self.username.split("@")[0]
+        ldap_client = LDAPConnectionFactory.from_url(
+            f"ldap+ntlm-password://{self.domain}\\{short_username}:{self.password}@{self.domain}"
+        ).get_client()
+        _, err = await ldap_client.connect()
+        if err is not None:
+            raise err
+
+        return ldap_client
+
+    async def fetch_users(self):
+        """Fetches all user objects from Active Directory domain.
+
+        Returns:
+            dict: Dictionary mapping usernames (userPrincipalName) to their SIDs
+        """
+        msldap_client = await self.get_msldap_client()
+        users = {}
+        async for user in msldap_client.get_all_users():
+            users[user[0].userPrincipalName] = user[0].objectSid
+        return users
+
     def find_user_by_id(self, sid):
         return self.session.find_user_by_sid(sid, ["objectSid"])
 
@@ -278,7 +311,25 @@ class ADSecurityInfo(SecurityInfo):
 
     # Expects an ADGroup Object
     def get_group_members(self, group):
-        return self.session.find_members_of_group_recursive(group)
+        members = []
+
+        def extract_users(members, remaining_items):
+            groups = []
+            for item in remaining_items:
+                if isinstance(item, ADUser):
+                    members.append(item)
+                elif isinstance(item, dict):
+                    for value in list(item.values()):
+                        groups.extend(value)
+            return members, groups
+
+        remaining_items = self.session.find_members_of_group_recursive(
+            group, ["objectSid"]
+        )
+        while len(remaining_items) > 0:
+            members, groups = extract_users(members, remaining_items)
+            remaining_items = groups
+        return members
 
 
 class SMBSession:
@@ -357,8 +408,13 @@ class NASDataSource(BaseDataSource):
         self.port = self.configuration["server_port"]
         self.drive_path = self.configuration["drive_path"]
         self.drive_type = self.configuration["drive_type"]
+        self.domain = self.configuration["domain"]
         self.identity_mappings = self.configuration["identity_mappings"]
         self.security_info = SecurityInfo(self.username, self.password, self.server_ip)
+        if self.domain:
+            self.security_info_ad = ADSecurityInfo(
+                self.username, self.password, self.server_ip, self.domain
+            )
 
     def advanced_rules_validators(self):
         return [NetworkDriveAdvancedRulesValidator(self)]
@@ -425,13 +481,24 @@ class NASDataSource(BaseDataSource):
                 "ui_restrictions": ["advanced"],
                 "value": WINDOWS,
             },
+            "domain": {
+                "label": "Active Directory Domain",
+                "depends_on": [
+                    {"field": "use_document_level_security", "value": True},
+                    {"field": "drive_type", "value": WINDOWS},
+                ],
+                "order": 8,
+                "type": "str",
+                "required": False,
+                "ui_restrictions": ["advanced"],
+            },
             "identity_mappings": {
                 "label": "Path of CSV file containing users and groups SID (For Linux Network Drive)",
                 "depends_on": [
                     {"field": "use_document_level_security", "value": True},
                     {"field": "drive_type", "value": LINUX},
                 ],
-                "order": 8,
+                "order": 9,
                 "type": "str",
                 "required": False,
                 "ui_restrictions": ["advanced"],
@@ -439,7 +506,7 @@ class NASDataSource(BaseDataSource):
             "use_text_extraction_service": {
                 "display": "toggle",
                 "label": "Use text extraction service",
-                "order": 9,
+                "order": 10,
                 "tooltip": "Requires a separate deployment of the Elastic Text Extraction Service. Requires that pipeline settings disable text extraction.",
                 "type": "bool",
                 "ui_restrictions": ["advanced"],
@@ -731,9 +798,21 @@ class NASDataSource(BaseDataSource):
         self, document, file_path, file_type, groups_info
     ):
         if self._dls_enabled():
-            allow_permissions, deny_permissions = await self.get_entity_permission(
-                file_path=file_path, file_type=file_type, groups_info=groups_info
-            )
+            if self.domain:
+                allow_permissions, deny_permissions = (
+                    await self.get_entity_permission_ad(
+                        file_path=file_path,
+                        file_type=file_type,
+                        domain=self.domain,
+                        user_id=self.username,
+                        password=self.password,
+                    )
+                )
+
+            else:
+                allow_permissions, deny_permissions = await self.get_entity_permission(
+                    file_path=file_path, file_type=file_type, groups_info=groups_info
+                )
             entity_permissions = list(set(allow_permissions) - set(deny_permissions))
             document[ACCESS_CONTROL] = list(
                 set(document.get(ACCESS_CONTROL, []) + entity_permissions)
@@ -821,7 +900,11 @@ class NASDataSource(BaseDataSource):
                 self._logger.info(
                     f"Fetching all users for drive at path '{self.drive_path}'"
                 )
-                users_info = await asyncio.to_thread(self.security_info.fetch_users)
+
+                if self.domain:
+                    users_info = await self.security_info_ad.fetch_users()
+                else:
+                    users_info = await asyncio.to_thread(self.security_info.fetch_users)
 
                 for user, sid in users_info.items():
                     yield await self._user_access_control_doc(
@@ -930,10 +1013,10 @@ class NASDataSource(BaseDataSource):
             ace_type = permission["ace_type"].value
 
             # Find the group by it's SID
-            group_info = security_info.find_group_by_id(permission["sid"])
+            group_info = security_info.find_group_by_id(str(permission["sid"]))
             if group_info:
                 permissions = [
-                    _prefix_rid(member.all_attributes["objectSid"].split("-")[-1])
+                    _extract_rid(member)
                     for member in security_info.get_group_members(group_info)
                 ]
             else:

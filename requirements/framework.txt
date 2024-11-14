@@ -45,3 +45,4 @@ certifi==2024.7.4
 aioboto3==12.4.0
 pyasn1<0.6.1
 ms-active-directory==1.14.1
+msldap==0.5.12 
