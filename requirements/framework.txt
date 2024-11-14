@@ -40,3 +40,5 @@ graphql-core==3.2.3
 notion-client==2.2.1
 certifi==2024.7.4
 aioboto3==12.4.0
+ms-active-directory==1.14.1
+msldap==0.5.12 
