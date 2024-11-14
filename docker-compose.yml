@@ -1,0 +1,16 @@
+services:
+  mediafly-connector:
+    image: docker.elastic.co/enterprise-search/elastic-connectors:8.15.2.0
+    volumes:
+      - ./config.yml:/config/config.yml
+      - ./connectors:/app/connectors
+      - ./config.py:/app/config.py
+    # Comment out the original command
+    command: ["/app/bin/elastic-ingest", "-c", "/config/config.yml"]
+    depends_on:
+      - extraction-service
+
+  extraction-service:
+    image: docker.elastic.co/enterprise-search/data-extraction-service:0.3.3
+    ports:
+      - "8090:8090"
