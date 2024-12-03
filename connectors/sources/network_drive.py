@@ -16,8 +16,6 @@ import smbclient
 import winrm
 from ms_active_directory import ADDomain, ADUser
 from msldap.commons.factory import LDAPConnectionFactory
-from smb.base import SMBTimeout
-from smb.smb_structs import OperationFailure
 from smbprotocol.exceptions import (
     SMBConnectionClosed,
     SMBException,
@@ -596,7 +594,6 @@ class NASDataSource(BaseDataSource):
             SMBOSError,
             SMBException,
             SMBConnectionClosed,
-            OperationFailure,
         ],
     )
     async def traverse_directory_for_syncrule(self, path, glob_pattern, indexed_rules):
@@ -781,7 +778,6 @@ class NASDataSource(BaseDataSource):
             SMBOSError,
             SMBException,
             SMBConnectionClosed,
-            OperationFailure,
         ],
     )
     def list_file_permission(self, file_path, file_type, mode, access):
@@ -805,7 +801,7 @@ class NASDataSource(BaseDataSource):
                     file_descriptor=file.fd, info=SECURITY_INFO_DACL
                 )
                 return descriptor.get_dacl()["aces"]
-        except (SMBConnectionClosed, OperationFailure) as exception:
+        except SMBConnectionClosed as exception:
             self._logger.warning(
                 f"Connection/Tree issue for {file_path}. Error: {exception}"
             )
