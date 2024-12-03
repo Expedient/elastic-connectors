@@ -782,11 +782,6 @@ class NASDataSource(BaseDataSource):
     )
     def list_file_permission(self, file_path, file_type, mode, access):
         try:
-            # Force reconnect if tree ID is invalid
-            if not self.smb_connection.connected:
-                self.smb_connection.create_connection()
-                self._connect_tree()
-
             with smbclient.open_file(
                 file_path,
                 mode=mode,
