@@ -809,6 +809,11 @@ class NASDataSource(BaseDataSource):
                 f"Cannot read the contents of file on path:{file_path}. Error {error}"
             )
             raise
+        except SMBException as error:
+            self._logger.error(
+                f"Cannot read the contents of file on path:{file_path}. Error {error}"
+            )
+            raise
 
     def _connect_tree(self):
         """Re-establish tree connection"""
