@@ -766,6 +766,12 @@ class NASDataSource(BaseDataSource):
             partial(self.fetch_file_content, path=file["path"]),
         )
 
+    @retryable(
+        retries=RETRIES,
+        interval=RETRY_INTERVAL,
+        strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+        skipped_exceptions=[SMBOSError, SMBException, SMBConnectionClosed],
+    )
     def list_file_permission(self, file_path, file_type, mode, access):
         try:
             with smbclient.open_file(
@@ -782,10 +788,18 @@ class NASDataSource(BaseDataSource):
                     file_descriptor=file.fd, info=SECURITY_INFO_DACL
                 )
                 return descriptor.get_dacl()["aces"]
+        except SMBConnectionClosed as exception:
+            self._logger.warning(
+                f"Connection closed while reading permissions for {file_path}. Error: {exception}"
+            )
+            # Re-establish connection before retry
+            self.smb_connection.create_connection()
+            raise
         except SMBOSError as error:
             self._logger.error(
                 f"Cannot read the contents of file on path:{file_path}. Error {error}"
             )
+            raise
 
     def _dls_enabled(self):
         if (
