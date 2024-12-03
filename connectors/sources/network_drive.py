@@ -16,6 +16,8 @@ import smbclient
 import winrm
 from ms_active_directory import ADDomain, ADUser
 from msldap.commons.factory import LDAPConnectionFactory
+from smb.base import SMBTimeout
+from smb.smb_structs import OperationFailure
 from smbprotocol.exceptions import (
     SMBConnectionClosed,
     SMBException,
@@ -590,7 +592,12 @@ class NASDataSource(BaseDataSource):
         retries=RETRIES,
         interval=RETRY_INTERVAL,
         strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
-        skipped_exceptions=[SMBOSError, SMBException],
+        skipped_exceptions=[
+            SMBOSError,
+            SMBException,
+            SMBConnectionClosed,
+            OperationFailure,
+        ],
     )
     async def traverse_directory_for_syncrule(self, path, glob_pattern, indexed_rules):
         self._logger.debug(
@@ -770,10 +777,20 @@ class NASDataSource(BaseDataSource):
         retries=RETRIES,
         interval=RETRY_INTERVAL,
         strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
-        skipped_exceptions=[SMBOSError, SMBException, SMBConnectionClosed],
+        skipped_exceptions=[
+            SMBOSError,
+            SMBException,
+            SMBConnectionClosed,
+            OperationFailure,
+        ],
     )
     def list_file_permission(self, file_path, file_type, mode, access):
         try:
+            # Force reconnect if tree ID is invalid
+            if not self.smb_connection.connected:
+                self.smb_connection.create_connection()
+                self._connect_tree()
+
             with smbclient.open_file(
                 file_path,
                 mode=mode,
@@ -788,17 +805,32 @@ class NASDataSource(BaseDataSource):
                     file_descriptor=file.fd, info=SECURITY_INFO_DACL
                 )
                 return descriptor.get_dacl()["aces"]
-        except SMBConnectionClosed as exception:
+        except (SMBConnectionClosed, OperationFailure) as exception:
             self._logger.warning(
-                f"Connection closed while reading permissions for {file_path}. Error: {exception}"
+                f"Connection/Tree issue for {file_path}. Error: {exception}"
             )
-            # Re-establish connection before retry
+            # Re-establish connection and tree before retry
             self.smb_connection.create_connection()
+            self._connect_tree()
             raise
         except SMBOSError as error:
             self._logger.error(
                 f"Cannot read the contents of file on path:{file_path}. Error {error}"
             )
+            raise
+
+    def _connect_tree(self):
+        """Re-establish tree connection"""
+        try:
+            self.smb_connection.connect(
+                server=self.server,
+                share_name=self.share_name,
+                username=self.username,
+                password=self.password,
+                port=self.port,
+            )
+        except Exception as e:
+            self._logger.error(f"Failed to reconnect tree: {e}")
             raise
 
     def _dls_enabled(self):
