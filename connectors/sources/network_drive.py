@@ -843,15 +843,22 @@ class NASDataSource(BaseDataSource):
     ):
         if self._dls_enabled():
             if self.domain:
-                allow_permissions, deny_permissions = (
-                    await self.get_entity_permission_ad(
-                        file_path=file_path,
-                        file_type=file_type,
-                        domain=self.domain,
-                        user_id=self.username,
-                        password=self.password,
+                try:
+                    allow_permissions, deny_permissions = (
+                        await self.get_entity_permission_ad(
+                            file_path=file_path,
+                            file_type=file_type,
+                            domain=self.domain,
+                            user_id=self.username,
+                            password=self.password,
+                        )
                     )
-                )
+                except SMBException as error:
+                    # not a huge fan of this, but it's not clear how else we can really resolve the problem with reading a small subset of files
+                    self._logger.error(
+                        f"Cannot read the contents of file on path:{file_path}. Error {error}"
+                    )
+                    return document
 
             else:
                 allow_permissions, deny_permissions = await self.get_entity_permission(
