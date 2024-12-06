@@ -53,6 +53,9 @@ from connectors.utils import (
     retryable,
 )
 
+import time
+import ldap3.core.exceptions
+
 ACCESS_ALLOWED_TYPE = 0
 ACCESS_DENIED_TYPE = 1
 ACCESS_MASK_ALLOWED_WRITE_PERMISSION = 1048854
@@ -274,9 +277,22 @@ class ADSecurityInfo(SecurityInfo):
 
     @cached_property
     def session(self):
-        domain = ADDomain(self.domain)
-        session = domain.create_session_as_user(self.username, self.password)
-        return session
+        """Gets an AD session with retry logic for transient LDAP errors"""
+        retries = 3
+        for attempt in range(retries):
+            try:
+                domain = ADDomain(self.domain)
+                session = domain.create_session_as_user(self.username, self.password)
+                return session
+            except ldap3.core.exceptions.LDAPStartTLSError as e:
+                if attempt == retries - 1:  # Last attempt
+                    raise
+                wait_time = (attempt + 1) * 5  # 5, 10, 15 seconds
+                self._logger.warning(
+                    f"LDAP connection failed (attempt {attempt + 1}/{retries}), "
+                    f"retrying in {wait_time} seconds. Error: {str(e)}"
+                )
+                time.sleep(wait_time)
 
     async def get_msldap_client(self):
         """gets the msldap client
