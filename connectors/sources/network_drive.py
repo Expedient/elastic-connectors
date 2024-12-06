@@ -732,24 +732,41 @@ class NASDataSource(BaseDataSource):
             path (str): The file path of the file on the Network Drive
         """
         self._logger.debug(f"Fetching the contents of file on path: {path}")
-        try:
-            with smbclient.open_file(
-                path=path,
-                encoding="utf-8",
-                errors="ignore",
-                mode="rb",
-                username=self.username,
-                password=self.password,
-                port=self.port,
-            ) as file:
-                chunk = True
-                while chunk:
-                    chunk = file.read(MAX_CHUNK_SIZE) or b""
-                    yield chunk
-        except SMBOSError as error:
-            self._logger.error(
-                f"Cannot read the contents of file on path:{path}. Error {error}"
-            )
+
+        retries = 2  # Will try 3 times total (initial + 2 retries)
+        for attempt in range(retries + 1):
+            try:
+                with smbclient.open_file(
+                    path=path,
+                    encoding="utf-8",
+                    errors="ignore",
+                    mode="rb",
+                    username=self.username,
+                    password=self.password,
+                    port=self.port,
+                ) as file:
+                    chunk = True
+                    while chunk:
+                        chunk = file.read(MAX_CHUNK_SIZE) or b""
+                        yield chunk
+                break  # Success - exit retry loop
+
+            except ValueError as error:
+                if attempt < retries:
+                    self._logger.warning(
+                        f"File was prematurely closed on path:{path}. Attempt {attempt + 1}/{retries + 1}. "
+                        f"Retrying in 3 seconds... Error: {error}"
+                    )
+                    await asyncio.sleep(3)
+                else:
+                    self._logger.error(
+                        f"Failed to read file after {retries + 1} attempts on path:{path}. Error: {error}"
+                    )
+            except SMBOSError as error:
+                self._logger.error(
+                    f"Cannot read the contents of file on path:{path}. Error {error}"
+                )
+                break  # Don't retry SMBOSError
 
     async def get_content(self, file, timestamp=None, doit=None):
         """Get the content for a given file
