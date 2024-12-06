@@ -1040,10 +1040,13 @@ class NASDataSource(BaseDataSource):
 
             if groups_info.get(rid):
                 # If the RID corresponds to a group, get the RIDs of all members of that group
-                permissions = [
-                    _prefix_rid(member_id.split("-")[-1])
-                    for member_id in groups_info[rid].values()
-                ]
+                try:
+                    permissions = [
+                        _prefix_rid(member_id.split("-")[-1])
+                        for member_id in groups_info[rid].values()
+                    ]
+                except KeyError as e:
+                    self._logger.error(f"Error getting entity permission: {e}")
             else:
                 # Else the RID corresponds to a user, hence we use it directly.
                 permissions = [_prefix_rid(rid)]
@@ -1090,34 +1093,37 @@ class NASDataSource(BaseDataSource):
                 access=DirectoryAccessMask.READ_CONTROL,
             )
         for permission in list_permissions or []:
-            # Access mask indicates specific permission within an ACE, such as read in deny ACE.
-            mask = permission["mask"].value
+            try:
+                # Access mask indicates specific permission within an ACE, such as read in deny ACE.
+                mask = permission["mask"].value
 
-            # Determine the type of ACE (access control entry), i.e, allow or deny
-            ace_type = permission["ace_type"].value
+                # Determine the type of ACE (access control entry), i.e, allow or deny
+                ace_type = permission["ace_type"].value
 
-            # Find the group by it's SID
-            group_info = security_info.find_group_by_id(str(permission["sid"]))
-            if group_info:
-                permissions = [
-                    _extract_rid(member)
-                    for member in security_info.get_group_members(group_info)
-                ]
-            else:
-                rid = str(permission["sid"]).split("-")[-1]
-                permissions = [_prefix_rid(rid)]
+                # Find the group by it's SID
+                group_info = security_info.find_group_by_id(str(permission["sid"]))
+                if group_info:
+                    permissions = [
+                        _extract_rid(member)
+                        for member in security_info.get_group_members(group_info)
+                    ]
+                else:
+                    rid = str(permission["sid"]).split("-")[-1]
+                    permissions = [_prefix_rid(rid)]
 
-            if (
-                ace_type == ACCESS_ALLOWED_TYPE
-                or mask == ACCESS_MASK_DENIED_WRITE_PERMISSION
-            ):
-                allow_permissions.extend(permissions)
+                if (
+                    ace_type == ACCESS_ALLOWED_TYPE
+                    or mask == ACCESS_MASK_DENIED_WRITE_PERMISSION
+                ):
+                    allow_permissions.extend(permissions)
 
-            if (
-                ace_type == ACCESS_DENIED_TYPE
-                and mask != ACCESS_MASK_DENIED_WRITE_PERMISSION
-            ):
-                deny_permissions.extend(permissions)
+                if (
+                    ace_type == ACCESS_DENIED_TYPE
+                    and mask != ACCESS_MASK_DENIED_WRITE_PERMISSION
+                ):
+                    deny_permissions.extend(permissions)
+            except KeyError as e:
+                self._logger.error(f"Error getting entity permission: {e}")
 
         return allow_permissions, deny_permissions
 
