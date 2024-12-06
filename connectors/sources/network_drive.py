@@ -7,10 +7,12 @@
 
 import asyncio
 import csv
+import time
 from collections import deque
 from functools import cached_property, partial
 
 import fastjsonschema
+import ldap3.core.exceptions
 import requests.exceptions
 import smbclient
 import winrm
@@ -52,9 +54,6 @@ from connectors.utils import (
     iso_utc,
     retryable,
 )
-
-import time
-import ldap3.core.exceptions
 
 ACCESS_ALLOWED_TYPE = 0
 ACCESS_DENIED_TYPE = 1
