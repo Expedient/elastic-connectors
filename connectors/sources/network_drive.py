@@ -174,6 +174,7 @@ class SecurityInfo:
         self.username = user
         self.server_ip = server
         self.password = password
+        self._logger = logger
 
     def get_descriptor(self, file_descriptor, info):
         """Get the Security Descriptor for the opened file."""
