@@ -161,7 +161,7 @@ class ExtraLogger(logging.Logger):
         super(ExtraLogger, self)._log(level, msg, args, exc_info, extra)
 
 
-def set_logger(log_level=logging.INFO, filebeat=False):
+def set_logger(log_level=logging.DEBUG, filebeat=False):
     global logger
     if filebeat:
         formatter = ecs_logging.StdlibFormatter()
@@ -183,7 +183,7 @@ def set_logger(log_level=logging.INFO, filebeat=False):
     return logger
 
 
-def set_extra_logger(logger, log_level=logging.INFO, prefix="BYOC", filebeat=False):
+def set_extra_logger(logger, log_level=logging.DEBUG, prefix="BYOC", filebeat=False):
     if isinstance(logger, str):
         logger = logging.getLogger(logger)
     handler = logging.StreamHandler()

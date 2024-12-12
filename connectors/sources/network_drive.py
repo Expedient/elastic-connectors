@@ -3,17 +3,21 @@
 # or more contributor license agreements. Licensed under the Elastic License 2.0;
 # you may not use this file except in compliance with the Elastic License 2.0.
 #
-"""Network Drive source module responsible to fetch documents from Network Drive.
-"""
+"""Network Drive source module responsible to fetch documents from Network Drive."""
+
 import asyncio
 import csv
+import time
 from collections import deque
 from functools import cached_property, partial
 
 import fastjsonschema
+import ldap3.core.exceptions
+import requests.exceptions
 import smbclient
 import winrm
-from requests.exceptions import ConnectionError
+from ms_active_directory import ADDomain, ADUser
+from msldap.commons.factory import LDAPConnectionFactory
 from smbprotocol.exceptions import (
     SMBConnectionClosed,
     SMBException,
@@ -101,6 +105,13 @@ def _prefix_rid(rid):
     return prefix_identity("rid", rid)
 
 
+def _extract_rid(user):
+    try:
+        return _prefix_rid(user.all_attributes["objectSid"].split("-")[-1])
+    except KeyError:
+        return None
+
+
 class InvalidRulesError(Exception):
     pass
 
@@ -163,6 +174,7 @@ class SecurityInfo:
         self.username = user
         self.server_ip = server
         self.password = password
+        self._logger = logger
 
     def get_descriptor(self, file_descriptor, info):
         """Get the Security Descriptor for the opened file."""
@@ -258,6 +270,84 @@ class SecurityInfo:
         return self.parse_output(members)
 
 
+class ADSecurityInfo(SecurityInfo):
+    def __init__(self, username, password, server, domain):
+        super().__init__(username, password, server)
+        self.domain = domain
+
+    @cached_property
+    def session(self):
+        """Gets an AD session with retry logic for transient LDAP errors"""
+        retries = 3
+        for attempt in range(retries):
+            try:
+                domain = ADDomain(self.domain)
+                session = domain.create_session_as_user(self.username, self.password)
+                return session
+            except ldap3.core.exceptions.LDAPStartTLSError as e:
+                if attempt == retries - 1:  # Last attempt
+                    raise
+                wait_time = (attempt + 1) * 5  # 5, 10, 15 seconds
+                self._logger.warning(
+                    f"LDAP connection failed (attempt {attempt + 1}/{retries}), "
+                    f"retrying in {wait_time} seconds. Error: {str(e)}"
+                )
+                time.sleep(wait_time)
+
+    async def get_msldap_client(self):
+        """gets the msldap client
+        using this to get the full user list from AD since"""
+        short_username = self.username.split("@")[0]
+        ldap_client = LDAPConnectionFactory.from_url(
+            f"ldap+ntlm-password://{self.domain}\\{short_username}:{self.password}@{self.domain}"
+        ).get_client()
+        _, err = await ldap_client.connect()
+        if err is not None:
+            raise err
+
+        return ldap_client
+
+    async def fetch_users(self):
+        """Fetches all user objects from Active Directory domain.
+
+        Returns:
+            dict: Dictionary mapping usernames (userPrincipalName) to their SIDs
+        """
+        msldap_client = await self.get_msldap_client()
+        users = {}
+        async for user in msldap_client.get_all_users():
+            users[user[0].userPrincipalName] = user[0].objectSid
+        return users
+
+    def find_user_by_id(self, sid):
+        return self.session.find_user_by_sid(sid, ["objectSid"])
+
+    def find_group_by_id(self, sid):
+        return self.session.find_group_by_sid(sid)
+
+    # Expects an ADGroup Object
+    def get_group_members(self, group):
+        members = []
+
+        def extract_users(members, remaining_items):
+            groups = []
+            for item in remaining_items:
+                if isinstance(item, ADUser):
+                    members.append(item)
+                elif isinstance(item, dict):
+                    for value in list(item.values()):
+                        groups.extend(value)
+            return members, groups
+
+        remaining_items = self.session.find_members_of_group_recursive(
+            group, ["objectSid"]
+        )
+        while len(remaining_items) > 0:
+            members, groups = extract_users(members, remaining_items)
+            remaining_items = groups
+        return members
+
+
 class SMBSession:
     _connection = None
 
@@ -334,8 +424,13 @@ class NASDataSource(BaseDataSource):
         self.port = self.configuration["server_port"]
         self.drive_path = self.configuration["drive_path"]
         self.drive_type = self.configuration["drive_type"]
+        self.domain = self.configuration["domain"]
         self.identity_mappings = self.configuration["identity_mappings"]
         self.security_info = SecurityInfo(self.username, self.password, self.server_ip)
+        if self.domain:
+            self.security_info_ad = ADSecurityInfo(
+                self.username, self.password, self.server_ip, self.domain
+            )
 
     def advanced_rules_validators(self):
         return [NetworkDriveAdvancedRulesValidator(self)]
@@ -402,13 +497,24 @@ class NASDataSource(BaseDataSource):
                 "ui_restrictions": ["advanced"],
                 "value": WINDOWS,
             },
+            "domain": {
+                "label": "Active Directory Domain",
+                "depends_on": [
+                    {"field": "use_document_level_security", "value": True},
+                    {"field": "drive_type", "value": WINDOWS},
+                ],
+                "order": 8,
+                "type": "str",
+                "required": False,
+                "ui_restrictions": ["advanced"],
+            },
             "identity_mappings": {
                 "label": "Path of CSV file containing users and groups SID (For Linux Network Drive)",
                 "depends_on": [
                     {"field": "use_document_level_security", "value": True},
                     {"field": "drive_type", "value": LINUX},
                 ],
-                "order": 8,
+                "order": 9,
                 "type": "str",
                 "required": False,
                 "ui_restrictions": ["advanced"],
@@ -416,7 +522,7 @@ class NASDataSource(BaseDataSource):
             "use_text_extraction_service": {
                 "display": "toggle",
                 "label": "Use text extraction service",
-                "order": 9,
+                "order": 10,
                 "tooltip": "Requires a separate deployment of the Elastic Text Extraction Service. Requires that pipeline settings disable text extraction.",
                 "type": "bool",
                 "ui_restrictions": ["advanced"],
@@ -500,7 +606,11 @@ class NASDataSource(BaseDataSource):
         retries=RETRIES,
         interval=RETRY_INTERVAL,
         strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
-        skipped_exceptions=[SMBOSError, SMBException],
+        skipped_exceptions=[
+            SMBOSError,
+            SMBException,
+            SMBConnectionClosed,
+        ],
     )
     async def traverse_directory_for_syncrule(self, path, glob_pattern, indexed_rules):
         self._logger.debug(
@@ -622,24 +732,41 @@ class NASDataSource(BaseDataSource):
             path (str): The file path of the file on the Network Drive
         """
         self._logger.debug(f"Fetching the contents of file on path: {path}")
-        try:
-            with smbclient.open_file(
-                path=path,
-                encoding="utf-8",
-                errors="ignore",
-                mode="rb",
-                username=self.username,
-                password=self.password,
-                port=self.port,
-            ) as file:
-                chunk = True
-                while chunk:
-                    chunk = file.read(MAX_CHUNK_SIZE) or b""
-                    yield chunk
-        except SMBOSError as error:
-            self._logger.error(
-                f"Cannot read the contents of file on path:{path}. Error {error}"
-            )
+
+        retries = 2  # Will try 3 times total (initial + 2 retries)
+        for attempt in range(retries + 1):
+            try:
+                with smbclient.open_file(
+                    path=path,
+                    encoding="utf-8",
+                    errors="ignore",
+                    mode="rb",
+                    username=self.username,
+                    password=self.password,
+                    port=self.port,
+                ) as file:
+                    chunk = True
+                    while chunk:
+                        chunk = file.read(MAX_CHUNK_SIZE) or b""
+                        yield chunk
+                break  # Success - exit retry loop
+
+            except ValueError as error:
+                if attempt < retries:
+                    self._logger.warning(
+                        f"File was prematurely closed on path:{path}. Attempt {attempt + 1}/{retries + 1}. "
+                        f"Retrying in 3 seconds... Error: {error}"
+                    )
+                    await asyncio.sleep(3)
+                else:
+                    self._logger.error(
+                        f"Failed to read file after {retries + 1} attempts on path:{path}. Error: {error}"
+                    )
+            except SMBOSError as error:
+                self._logger.error(
+                    f"Cannot read the contents of file on path:{path}. Error {error}"
+                )
+                break  # Don't retry SMBOSError
 
     async def get_content(self, file, timestamp=None, doit=None):
         """Get the content for a given file
@@ -676,6 +803,16 @@ class NASDataSource(BaseDataSource):
             partial(self.fetch_file_content, path=file["path"]),
         )
 
+    @retryable(
+        retries=RETRIES,
+        interval=RETRY_INTERVAL,
+        strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+        skipped_exceptions=[
+            SMBOSError,
+            SMBException,
+            SMBConnectionClosed,
+        ],
+    )
     def list_file_permission(self, file_path, file_type, mode, access):
         try:
             with smbclient.open_file(
@@ -685,15 +822,45 @@ class NASDataSource(BaseDataSource):
                 file_type=file_type,
                 desired_access=access,
                 port=self.port,
+                username=self.username,
+                password=self.password,
             ) as file:
                 descriptor = self.security_info.get_descriptor(
                     file_descriptor=file.fd, info=SECURITY_INFO_DACL
                 )
                 return descriptor.get_dacl()["aces"]
+        except SMBConnectionClosed as exception:
+            self._logger.warning(
+                f"Connection/Tree issue for {file_path}. Error: {exception}"
+            )
+            # Re-establish connection and tree before retry
+            self.smb_connection.create_connection()
+            self._connect_tree()
+            raise
         except SMBOSError as error:
             self._logger.error(
                 f"Cannot read the contents of file on path:{file_path}. Error {error}"
             )
+            raise
+        except SMBException as error:
+            self._logger.error(
+                f"Cannot read the contents of file on path:{file_path}. Error {error}"
+            )
+            raise
+
+    def _connect_tree(self):
+        """Re-establish tree connection"""
+        try:
+            self.smb_connection.connect(
+                server=self.server,
+                share_name=self.share_name,
+                username=self.username,
+                password=self.password,
+                port=self.port,
+            )
+        except Exception as e:
+            self._logger.error(f"Failed to reconnect tree: {e}")
+            raise
 
     def _dls_enabled(self):
         if (
@@ -708,9 +875,28 @@ class NASDataSource(BaseDataSource):
         self, document, file_path, file_type, groups_info
     ):
         if self._dls_enabled():
-            allow_permissions, deny_permissions = await self.get_entity_permission(
-                file_path=file_path, file_type=file_type, groups_info=groups_info
-            )
+            if self.domain:
+                try:
+                    allow_permissions, deny_permissions = (
+                        await self.get_entity_permission_ad(
+                            file_path=file_path,
+                            file_type=file_type,
+                            domain=self.domain,
+                            user_id=self.username,
+                            password=self.password,
+                        )
+                    )
+                except SMBException as error:
+                    # not a huge fan of this, but it's not clear how else we can really resolve the problem with reading a small subset of files
+                    self._logger.error(
+                        f"Cannot read the contents of file on path:{file_path}. Error {error}"
+                    )
+                    return document
+
+            else:
+                allow_permissions, deny_permissions = await self.get_entity_permission(
+                    file_path=file_path, file_type=file_type, groups_info=groups_info
+                )
             entity_permissions = list(set(allow_permissions) - set(deny_permissions))
             document[ACCESS_CONTROL] = list(
                 set(document.get(ACCESS_CONTROL, []) + entity_permissions)
@@ -798,16 +984,20 @@ class NASDataSource(BaseDataSource):
                 self._logger.info(
                     f"Fetching all users for drive at path '{self.drive_path}'"
                 )
-                users_info = await asyncio.to_thread(self.security_info.fetch_users)
+
+                if self.domain:
+                    users_info = await self.security_info_ad.fetch_users()
+                else:
+                    users_info = await asyncio.to_thread(self.security_info.fetch_users)
 
                 for user, sid in users_info.items():
                     yield await self._user_access_control_doc(
                         user=user,
                         sid=sid,
                     )
-            except ConnectionError as exception:
+            except requests.exceptions.ConnectionError as exception:
                 msg = "Something went wrong"
-                raise ConnectionError(msg) from exception
+                raise requests.exceptions.ConnectionError(msg) from exception
 
     async def get_entity_permission(self, file_path, file_type, groups_info):
         """Processes permissions for a network drive, focusing on key terms:
@@ -820,6 +1010,74 @@ class NASDataSource(BaseDataSource):
         if not self._dls_enabled():
             return []
 
+        allow_permissions = []
+        deny_permissions = []
+        try:
+            if file_type == "file":
+                list_permissions = await asyncio.to_thread(
+                    self.list_file_permission,
+                    file_path=file_path,
+                    file_type="file",
+                    mode="rb",
+                    access=FilePipePrinterAccessMask.READ_CONTROL,
+                )
+            else:
+                list_permissions = await asyncio.to_thread(
+                    self.list_file_permission,
+                    file_path=file_path,
+                    file_type="dir",
+                    mode="br",
+                    access=DirectoryAccessMask.READ_CONTROL,
+                )
+        except Exception as e:
+            self._logger.error(f"Error getting entity permission: {e}")
+            return [], []
+        for permission in list_permissions or []:
+            # Access mask indicates specific permission within an ACE, such as read in deny ACE.
+            mask = permission["mask"].value
+
+            # Determine the type of ACE (access control entry), i.e, allow or deny
+            ace_type = permission["ace_type"].value
+
+            # Extract RID from SID. RID uniquely identifying a user or group within a domain.
+            rid = str(permission["sid"]).split("-")[-1]
+
+            if groups_info.get(rid):
+                # If the RID corresponds to a group, get the RIDs of all members of that group
+                try:
+                    permissions = [
+                        _prefix_rid(member_id.split("-")[-1])
+                        for member_id in groups_info[rid].values()
+                    ]
+                except KeyError as e:
+                    self._logger.error(f"Error getting entity permission: {e}")
+            else:
+                # Else the RID corresponds to a user, hence we use it directly.
+                permissions = [_prefix_rid(rid)]
+
+            if (
+                ace_type == ACCESS_ALLOWED_TYPE
+                or mask == ACCESS_MASK_DENIED_WRITE_PERMISSION
+            ):
+                allow_permissions.extend(permissions)
+
+            if (
+                ace_type == ACCESS_DENIED_TYPE
+                and mask != ACCESS_MASK_DENIED_WRITE_PERMISSION
+            ):
+                deny_permissions.extend(permissions)
+
+        return allow_permissions, deny_permissions
+
+    async def get_entity_permission_ad(
+        self, file_path, file_type, domain, user_id, password
+    ):
+        """handles actually fetching user and group info from AD
+        function above only actually works on local machines"""
+        if not self._dls_enabled():
+            return []
+
+        security_info = ADSecurityInfo(user_id, password, self.server_ip, domain)
         allow_permissions = []
         deny_permissions = []
         if file_type == "file":
@@ -839,35 +1097,37 @@ class NASDataSource(BaseDataSource):
                 access=DirectoryAccessMask.READ_CONTROL,
             )
         for permission in list_permissions or []:
-            # Access mask indicates specific permission within an ACE, such as read in deny ACE.
-            mask = permission["mask"].value
+            try:
+                # Access mask indicates specific permission within an ACE, such as read in deny ACE.
+                mask = permission["mask"].value
 
-            # Determine the type of ACE (access control entry), i.e, allow or deny
-            ace_type = permission["ace_type"].value
+                # Determine the type of ACE (access control entry), i.e, allow or deny
+                ace_type = permission["ace_type"].value
 
-            # Extract RID from SID. RID uniquely identifying a user or group within a domain.
-            rid = str(permission["sid"]).split("-")[-1]
+                # Find the group by it's SID
+                group_info = security_info.find_group_by_id(str(permission["sid"]))
+                if group_info:
+                    permissions = [
+                        _extract_rid(member)
+                        for member in security_info.get_group_members(group_info)
+                    ]
+                else:
+                    rid = str(permission["sid"]).split("-")[-1]
+                    permissions = [_prefix_rid(rid)]
 
-            if groups_info.get(rid):
-                # If the RID corresponds to a group, get the RIDs of all members of that group
-                permissions = [
-                    _prefix_rid(member_id.split("-")[-1])
-                    for member_id in groups_info[rid].values()
-                ]
-            else:
-                # Else the RID corresponds to a user, hence we use it directly.
-                permissions = [_prefix_rid(rid)]
-            if (
-                ace_type == ACCESS_ALLOWED_TYPE
-                or mask == ACCESS_MASK_DENIED_WRITE_PERMISSION
-            ):
-                allow_permissions.extend(permissions)
+                if (
+                    ace_type == ACCESS_ALLOWED_TYPE
+                    or mask == ACCESS_MASK_DENIED_WRITE_PERMISSION
+                ):
+                    allow_permissions.extend(permissions)
 
-            if (
-                ace_type == ACCESS_DENIED_TYPE
-                and mask != ACCESS_MASK_DENIED_WRITE_PERMISSION
-            ):
-                deny_permissions.extend(permissions)
+                if (
+                    ace_type == ACCESS_DENIED_TYPE
+                    and mask != ACCESS_MASK_DENIED_WRITE_PERMISSION
+                ):
+                    deny_permissions.extend(permissions)
+            except KeyError as e:
+                self._logger.error(f"Error getting entity permission: {e}")
 
         return allow_permissions, deny_permissions
 
