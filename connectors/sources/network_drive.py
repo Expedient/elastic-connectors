@@ -1012,22 +1012,26 @@ class NASDataSource(BaseDataSource):
 
         allow_permissions = []
         deny_permissions = []
-        if file_type == "file":
-            list_permissions = await asyncio.to_thread(
-                self.list_file_permission,
-                file_path=file_path,
-                file_type="file",
-                mode="rb",
-                access=FilePipePrinterAccessMask.READ_CONTROL,
-            )
-        else:
-            list_permissions = await asyncio.to_thread(
-                self.list_file_permission,
-                file_path=file_path,
-                file_type="dir",
-                mode="br",
-                access=DirectoryAccessMask.READ_CONTROL,
-            )
+        try:
+            if file_type == "file":
+                list_permissions = await asyncio.to_thread(
+                    self.list_file_permission,
+                    file_path=file_path,
+                    file_type="file",
+                    mode="rb",
+                    access=FilePipePrinterAccessMask.READ_CONTROL,
+                )
+            else:
+                list_permissions = await asyncio.to_thread(
+                    self.list_file_permission,
+                    file_path=file_path,
+                    file_type="dir",
+                    mode="br",
+                    access=DirectoryAccessMask.READ_CONTROL,
+                )
+        except Exception as e:
+            self._logger.error(f"Error getting entity permission: {e}")
+            return [], []
         for permission in list_permissions or []:
             # Access mask indicates specific permission within an ACE, such as read in deny ACE.
             mask = permission["mask"].value
