@@ -434,28 +434,39 @@ class Office365Users:
         async for users in self.get_users():
             for user in users.get("value", []):
                 mail = user.get("mail")
+                # Skip if mail is None
                 if mail is None:
                     continue
-
-                credentials = OAuth2Credentials(
-                    client_id=self.client_id,
-                    tenant_id=self.tenant_id,
-                    client_secret=self.client_secret,
-                    identity=Identity(primary_smtp_address=mail),
-                )
-                configuration = Configuration(
-                    credentials=credentials,
-                    auth_type=OAUTH2,
-                    service_endpoint=EWS_ENDPOINT,
-                    retry_policy=FaultTolerance(max_wait=120),
-                )
-                user_account = Account(
-                    primary_smtp_address=mail,
-                    config=configuration,
-                    autodiscover=False,
-                    access_type=IMPERSONATION,
-                )
-                yield user_account
+                try:
+                    # Set up the credentials and configuration
+                    credentials = OAuth2Credentials(
+                        client_id=self.client_id,
+                        tenant_id=self.tenant_id,
+                        client_secret=self.client_secret,
+                        identity=Identity(primary_smtp_address=mail),
+                    )
+                    configuration = Configuration(
+                        credentials=credentials,
+                        auth_type=OAUTH2,
+                        service_endpoint=EWS_ENDPOINT,
+                        retry_policy=FaultTolerance(max_wait=120),
+                    )
+                    print(f"User: {user}, Mail: {mail}")
+                    
+                    # Create the user account
+                    user_account = Account(
+                        primary_smtp_address=mail,
+                        config=configuration,
+                        autodiscover=False,
+                        access_type=IMPERSONATION,
+                    )
+                    
+                    # Yield the user account
+                    yield user_account
+                
+                except Exception as e:
+                    # Log the exception or handle it accordingly
+                    print(f"Skipping user due to error: {e}")
 
 
 class OutlookDocFormatter:
