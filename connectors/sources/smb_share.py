@@ -846,9 +846,10 @@ class SMBClient:
                 file_open = Open(share, file_info["full_path"].lstrip("\\").lstrip(" "))
                 file_open.create(
                     ImpersonationLevel.Impersonation,
-                    FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,  # Only need attributes access for ACLs
+                    FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES
+                    | FilePipePrinterAccessMask.READ_CONTROL,  # Need READ_CONTROL for ACLs
                     FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                    ShareAccess.FILE_SHARE_READ,
+                    ShareAccess.FILE_SHARE_READ,  # Only need read sharing for read-only access
                     CreateDisposition.FILE_OPEN,
                     CreateOptions.FILE_NON_DIRECTORY_FILE,
                 )
@@ -917,9 +918,10 @@ class SMBClient:
             file_open = Open(share, file_info["full_path"].lstrip("\\").lstrip(" "))
             file_open.create(
                 ImpersonationLevel.Impersonation,
-                FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,  # Only need attributes access for ACLs
+                FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES
+                | FilePipePrinterAccessMask.READ_CONTROL,  # Need READ_CONTROL for ACLs
                 FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                ShareAccess.FILE_SHARE_READ,
+                ShareAccess.FILE_SHARE_READ,  # Only need read sharing for read-only access
                 CreateDisposition.FILE_OPEN,
                 CreateOptions.FILE_NON_DIRECTORY_FILE,
             )
