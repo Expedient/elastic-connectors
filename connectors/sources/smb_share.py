@@ -763,9 +763,7 @@ class SMBClient:
                 FilePipePrinterAccessMask.FILE_READ_DATA
                 | FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,  # Only request needed permissions,
                 FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                ShareAccess.FILE_SHARE_READ
-                | ShareAccess.FILE_SHARE_WRITE
-                | ShareAccess.FILE_SHARE_DELETE,
+                ShareAccess.FILE_SHARE_READ,
                 CreateDisposition.FILE_OPEN,
                 CreateOptions.FILE_NON_DIRECTORY_FILE
                 | CreateOptions.FILE_SEQUENTIAL_ONLY,
@@ -850,9 +848,7 @@ class SMBClient:
                     ImpersonationLevel.Impersonation,
                     FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,  # Only need attributes access for ACLs
                     FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                    ShareAccess.FILE_SHARE_READ
-                    | ShareAccess.FILE_SHARE_WRITE
-                    | ShareAccess.FILE_SHARE_DELETE,
+                    ShareAccess.FILE_SHARE_READ,
                     CreateDisposition.FILE_OPEN,
                     CreateOptions.FILE_NON_DIRECTORY_FILE,
                 )
@@ -923,9 +919,7 @@ class SMBClient:
                 ImpersonationLevel.Impersonation,
                 FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,  # Only need attributes access for ACLs
                 FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                ShareAccess.FILE_SHARE_READ
-                | ShareAccess.FILE_SHARE_WRITE
-                | ShareAccess.FILE_SHARE_DELETE,
+                ShareAccess.FILE_SHARE_READ,
                 CreateDisposition.FILE_OPEN,
                 CreateOptions.FILE_NON_DIRECTORY_FILE,
             )
@@ -958,9 +952,7 @@ class SMBClient:
                 FilePipePrinterAccessMask.FILE_READ_DATA
                 | FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,
                 FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                ShareAccess.FILE_SHARE_READ
-                | ShareAccess.FILE_SHARE_WRITE
-                | ShareAccess.FILE_SHARE_DELETE,
+                ShareAccess.FILE_SHARE_READ,
                 CreateDisposition.FILE_OPEN,
                 CreateOptions.FILE_NON_DIRECTORY_FILE
                 | CreateOptions.FILE_SEQUENTIAL_ONLY,
