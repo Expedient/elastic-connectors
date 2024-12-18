@@ -1234,7 +1234,7 @@ class SMBShareDataSource(BaseDataSource):
         # Skip files that exceed size limit
         if not self.is_file_size_within_limit(file["size"], file["title"]):
             self._logger.warning(
-                f"File {file['title']} exceeds configured size limit. Skipping."
+                f"File {file['title']} is {file['size']} bytes, which exceeds configured size limit. Skipping."
             )
             return
 
@@ -1280,7 +1280,7 @@ class SMBShareDataSource(BaseDataSource):
             # Skip files that exceed size limit
             if not self.is_file_size_within_limit(file["size"], file["name"]):
                 self._logger.warning(
-                    f"File {file['name']} exceeds configured size limit. Skipping."
+                    f"File {file['name']} is {file['size']} bytes, which exceeds configured size limit. Skipping."
                 )
                 continue
 
