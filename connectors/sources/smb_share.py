@@ -761,7 +761,7 @@ class SMBClient:
             file_open.create(
                 ImpersonationLevel.Impersonation,
                 FilePipePrinterAccessMask.FILE_READ_DATA
-                | FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,  # Only request needed permissions,
+                | FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,
                 FileAttributes.FILE_ATTRIBUTE_NORMAL,
                 ShareAccess.FILE_SHARE_READ,
                 CreateDisposition.FILE_OPEN,
@@ -769,29 +769,32 @@ class SMBClient:
                 | CreateOptions.FILE_SEQUENTIAL_ONLY,
             )
 
-            # if get_permissions:
-            #     logger.debug(f"Getting permissions for file {file_path}")
-            #     allowed_sids = await self._get_file_permissions(file_open)
-            #     logger.debug(f"retrieved {len(allowed_sids)} allowed sids")
-
             offset = 0
             file_size = file_open.end_of_file
             all_content = bytearray()
 
             logger.debug(f"getting content for {file_path} of length {file_size}")
             while offset < file_size:
-                chunk_size = min(CHUNK_SIZE, file_size - offset)
-                chunk = file_open.read(offset, chunk_size)
-                all_content.extend(chunk)
-                offset += chunk_size
+                try:
+                    chunk_size = min(CHUNK_SIZE, file_size - offset)
+                    chunk = file_open.read(offset, chunk_size)
+                    all_content.extend(chunk)
+                    offset += chunk_size
+                except SMBOSError as e:
+                    logger.warning(
+                        f"SMB error while reading {file_path}, skipping: {e}"
+                    )
+                    return None
+
             logger.debug(f"retrieved {len(all_content)} bytes")
 
             return {
                 "body": bytes(all_content),
                 "size": file_size,
             }
-        except Exception as e:
-            logger.error(f"Error reading file {file_path}: {e}")
+        except SMBOSError as e:
+            logger.warning(f"SMB error while opening {file_path}, skipping: {e}")
+            return None
         finally:
             file_open.close()
 
@@ -965,16 +968,22 @@ class SMBClient:
 
             logger.debug(f"getting content for {file_path} of length {file_size}")
             while offset < file_size:
-                chunk_size = min(CHUNK_SIZE, file_size - offset)
-                chunk = file_open.read(offset, chunk_size)
-                yield chunk
-                offset += chunk_size
+                try:
+                    chunk_size = min(CHUNK_SIZE, file_size - offset)
+                    chunk = file_open.read(offset, chunk_size)
+                    yield chunk
+                    offset += chunk_size
+                except SMBOSError as e:
+                    logger.warning(
+                        f"SMB error while reading {file_path}, skipping: {e}"
+                    )
+                    return
 
             logger.debug(f"finished reading {file_path}")
 
-        except Exception as e:
-            logger.error(f"Error reading file content for {file_path}: {e}")
-            raise
+        except SMBOSError as e:
+            logger.warning(f"SMB error while opening {file_path}, skipping: {e}")
+            return
         finally:
             file_open.close()
 
