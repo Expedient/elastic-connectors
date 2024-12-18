@@ -760,11 +760,15 @@ class SMBClient:
             logger.debug(f"Opening file {file_path}")
             file_open.create(
                 ImpersonationLevel.Impersonation,
-                FilePipePrinterAccessMask.MAXIMUM_ALLOWED,
+                FilePipePrinterAccessMask.FILE_READ_DATA
+                | FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,  # Only request needed permissions,
                 FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                ShareAccess.FILE_SHARE_READ,
+                ShareAccess.FILE_SHARE_READ
+                | ShareAccess.FILE_SHARE_WRITE
+                | ShareAccess.FILE_SHARE_DELETE,
                 CreateDisposition.FILE_OPEN,
-                CreateOptions.FILE_NON_DIRECTORY_FILE,
+                CreateOptions.FILE_NON_DIRECTORY_FILE
+                | CreateOptions.FILE_SEQUENTIAL_ONLY,
             )
 
             # if get_permissions:
@@ -844,9 +848,11 @@ class SMBClient:
                 file_open = Open(share, file_info["full_path"].lstrip("\\").lstrip(" "))
                 file_open.create(
                     ImpersonationLevel.Impersonation,
-                    FilePipePrinterAccessMask.MAXIMUM_ALLOWED,
+                    FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,  # Only need attributes access for ACLs
                     FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                    ShareAccess.FILE_SHARE_READ,
+                    ShareAccess.FILE_SHARE_READ
+                    | ShareAccess.FILE_SHARE_WRITE
+                    | ShareAccess.FILE_SHARE_DELETE,
                     CreateDisposition.FILE_OPEN,
                     CreateOptions.FILE_NON_DIRECTORY_FILE,
                 )
@@ -915,9 +921,11 @@ class SMBClient:
             file_open = Open(share, file_info["full_path"].lstrip("\\").lstrip(" "))
             file_open.create(
                 ImpersonationLevel.Impersonation,
-                FilePipePrinterAccessMask.MAXIMUM_ALLOWED,
+                FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,  # Only need attributes access for ACLs
                 FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                ShareAccess.FILE_SHARE_READ,
+                ShareAccess.FILE_SHARE_READ
+                | ShareAccess.FILE_SHARE_WRITE
+                | ShareAccess.FILE_SHARE_DELETE,
                 CreateDisposition.FILE_OPEN,
                 CreateOptions.FILE_NON_DIRECTORY_FILE,
             )
@@ -947,11 +955,15 @@ class SMBClient:
             file_open = Open(share, file_path.lstrip("\\").lstrip(" "))
             file_open.create(
                 ImpersonationLevel.Impersonation,
-                FilePipePrinterAccessMask.MAXIMUM_ALLOWED,
+                FilePipePrinterAccessMask.FILE_READ_DATA
+                | FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,
                 FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                ShareAccess.FILE_SHARE_READ,
+                ShareAccess.FILE_SHARE_READ
+                | ShareAccess.FILE_SHARE_WRITE
+                | ShareAccess.FILE_SHARE_DELETE,
                 CreateDisposition.FILE_OPEN,
-                CreateOptions.FILE_NON_DIRECTORY_FILE,
+                CreateOptions.FILE_NON_DIRECTORY_FILE
+                | CreateOptions.FILE_SEQUENTIAL_ONLY,
             )
 
             offset = 0
