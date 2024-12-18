@@ -130,6 +130,7 @@ def _default_config():
             "sharepoint_online": "connectors.sources.sharepoint_online:SharepointOnlineDataSource",
             "sharepoint_server": "connectors.sources.sharepoint_server:SharepointServerDataSource",
             "slack": "connectors.sources.slack:SlackDataSource",
+            "smb_share": "connectors.sources.smb_share:SMBShareDataSource",
             "zoom": "connectors.sources.zoom:ZoomDataSource",
         },
     }
