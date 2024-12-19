@@ -556,37 +556,77 @@ class LDAPClient:
             # Attributes we want to retrieve
             attrs = ["sAMAccountName", "userPrincipalName", "objectSid", "mail"]
 
-            # Perform the search asynchronously
+            # Set page size for pagination
+            page_size = 1000
             loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                None,
-                self._conn.search_s,
-                base_dn,
-                ldap.SCOPE_SUBTREE,
-                search_filter,
-                attrs,
+
+            # Enable paged results
+            ldap_control = ldap.controls.SimplePagedResultsControl(
+                True, size=page_size, cookie=""
             )
 
             users = []
-            for _, attributes in results:
-                # Skip entries without required attributes
-                if not all(
-                    attr in attributes
-                    for attr in ["sAMAccountName", "userPrincipalName", "objectSid"]
-                ):
-                    continue
+            has_more = True
+            while has_more:
+                # Perform the search with paging
+                msgid = self._conn.search_ext(
+                    base_dn,
+                    ldap.SCOPE_SUBTREE,
+                    search_filter,
+                    attrs,
+                    serverctrls=[ldap_control],
+                )
 
-                user = {
-                    "name": attributes["sAMAccountName"][0].decode("utf-8"),
-                    "upn": attributes["userPrincipalName"][0].decode("utf-8"),
-                    "sid": attributes["objectSid"][0].decode("utf-8"),
-                    "email": (
-                        attributes["mail"][0].decode("utf-8")
-                        if "mail" in attributes
-                        else None
-                    ),
-                }
-                users.append(user)
+                try:
+                    rtype, rdata, rmsgid, serverctrls = await loop.run_in_executor(
+                        None, self._conn.result3, msgid
+                    )
+                except ldap.SIZELIMIT_EXCEEDED as e:
+                    logger.warning(
+                        f"Size limit exceeded, but continuing with partial results: {e}"
+                    )
+                    break
+
+                # Process the page of results
+                for _, attributes in rdata:
+                    # Skip entries without required attributes
+                    if not isinstance(attributes, dict) or not all(
+                        attr in attributes
+                        for attr in ["sAMAccountName", "userPrincipalName", "objectSid"]
+                    ):
+                        continue
+
+                    try:
+                        user = {
+                            "name": attributes["sAMAccountName"][0].decode("utf-8"),
+                            "upn": attributes["userPrincipalName"][0].decode("utf-8"),
+                            "sid": convert_sid(attributes["objectSid"][0]),
+                            "email": (
+                                attributes["mail"][0].decode("utf-8")
+                                if "mail" in attributes
+                                else None
+                            ),
+                        }
+                        users.append(user)
+                    except Exception as e:
+                        logger.warning(f"Error processing user attributes: {e}")
+                        continue
+
+                # Get cookie from the page control
+                page_controls = [
+                    c
+                    for c in serverctrls
+                    if c.controlType
+                    == ldap.controls.SimplePagedResultsControl.controlType
+                ]
+                if not page_controls:
+                    has_more = False
+                else:
+                    cookie = page_controls[0].cookie
+                    if not cookie:
+                        has_more = False
+                    else:
+                        ldap_control.cookie = cookie
 
             return users
 
@@ -1329,9 +1369,15 @@ class SMBShareDataSource(BaseDataSource):
         } | es_access_control_query(access_control)
 
     async def get_access_control(self):
-        """get the access control for the SMB share"""
+        """Get the access control for the SMB share
+
+        Yields:
+            dict: Access control document for each domain user
+        """
         if not self._dls_enabled():
             self._logger.warning("DLS is not enabled. Skipping")
             return
+
         domain_users = await self.ldap_client.get_all_domain_users()
-        return [self._format_access_control(user) for user in domain_users]
+        for user in domain_users:
+            yield self._format_access_control(user)
