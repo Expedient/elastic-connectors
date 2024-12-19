@@ -670,11 +670,6 @@ class SMBClient:
         """
         Recursively lists all files in a given path on the share
         Yields dicts containing file information including full path
-
-        Args:
-            share_name: Name of the SMB share to access
-            path: Path within the share to list files from. If None, lists from root
-            base_path: Base path for calculating relative paths. If None, uses path
         """
         if base_path is None:
             base_path = path
@@ -686,57 +681,79 @@ class SMBClient:
             path = path.lstrip(" ")
             dir_open = Open(share, path)
 
-            dir_open.create(
-                ImpersonationLevel.Impersonation,
-                DirectoryAccessMask.FILE_LIST_DIRECTORY,
-                None,
-                ShareAccess.FILE_SHARE_READ,
-                CreateDisposition.FILE_OPEN,
-                CreateOptions.FILE_DIRECTORY_FILE,
-            )
+            try:
+                dir_open.create(
+                    ImpersonationLevel.Impersonation,
+                    DirectoryAccessMask.FILE_LIST_DIRECTORY,
+                    None,
+                    ShareAccess.FILE_SHARE_READ,
+                    CreateDisposition.FILE_OPEN,
+                    CreateOptions.FILE_DIRECTORY_FILE,
+                )
+            except SMBOSError as e:
+                logger.warning(f"Access denied or error opening directory {path}: {e}")
+                return
 
-            files = dir_open.query_directory(
-                "*",
-                FileInformationClass.FILE_ID_BOTH_DIRECTORY_INFORMATION,
-            )
+            try:
+                files = dir_open.query_directory(
+                    "*",
+                    FileInformationClass.FILE_ID_BOTH_DIRECTORY_INFORMATION,
+                )
+            except SMBOSError as e:
+                logger.warning(f"Error listing contents of directory {path}: {e}")
+                return
+            finally:
+                dir_open.close()
 
             for file in files:
-                file_name = file["file_name"].get_value().decode("utf-16-le")
-                # Skip . and .. directory entries
-                if file_name in [".", ".."]:
+                try:
+                    file_name = file["file_name"].get_value().decode("utf-16-le")
+                    # Skip . and .. directory entries
+                    if file_name in [".", ".."]:
+                        continue
+
+                    file_attributes = file["file_attributes"].get_value()
+                    relative_path = "\\".join(
+                        filter(None, [path[len(base_path) :].strip("\\"), file_name])
+                    )
+
+                    file_info = {
+                        "name": file_name,
+                        "relative_path": relative_path,
+                        "full_path": f"{path}\\{file_name}",
+                        "is_directory": is_directory(file_attributes),
+                        "attributes": file_attributes,
+                        "file_id": file["file_id"].get_value(),
+                        "created_at": iso_utc(file["creation_time"].get_value()),
+                        "modified_at": iso_utc(file["change_time"].get_value()),
+                        "type": file_name.split(".")[-1],
+                        "size": file["end_of_file"].get_value(),
+                    }
+
+                    if is_directory(file_attributes):
+                        # Recursively get files from subdirectory
+                        try:
+                            subdir_path = f"{path}\\{file_name}"
+                            async for subdir_file in self.list_files(
+                                share_name, subdir_path, base_path
+                            ):
+                                yield subdir_file
+                        except Exception as e:
+                            logger.warning(
+                                f"Error accessing subdirectory {subdir_path}: {e}"
+                            )
+                            continue
+
+                    if file_info["type"] in SUPPORTED_FILE_TYPES:
+                        yield file_info
+
+                except Exception as e:
+                    logger.warning(f"Error processing file entry in {path}: {e}")
                     continue
 
-                file_attributes = file["file_attributes"].get_value()
-                relative_path = "\\".join(
-                    filter(None, [path[len(base_path) :].strip("\\"), file_name])
-                )
-
-                file_info = {
-                    "name": file_name,
-                    "relative_path": relative_path,
-                    "full_path": f"{path}\\{file_name}",
-                    "is_directory": is_directory(file_attributes),
-                    "attributes": file_attributes,
-                    "file_id": file["file_id"].get_value(),
-                    "created_at": iso_utc(file["creation_time"].get_value()),
-                    "modified_at": iso_utc(file["change_time"].get_value()),
-                    "type": file_name.split(".")[-1],
-                    "size": file["end_of_file"].get_value(),
-                }
-
-                if is_directory(file_attributes):
-                    # Recursively get files from subdirectory
-                    subdir_path = f"{path}\\{file_name}"
-                    async for subdir_file in self.list_files(
-                        share_name, subdir_path, base_path
-                    ):
-                        yield subdir_file
-
-                if file_info["type"] in SUPPORTED_FILE_TYPES:
-                    yield file_info
-
-        finally:
-            dir_open.close()
+        except Exception as e:
+            logger.warning(f"Error accessing path {path}: {e}")
+            return
 
     @retryable(
         retries=3,
@@ -745,36 +762,43 @@ class SMBClient:
         skipped_exceptions=[SMBOSError, SMBException],
     )
     async def _get_file_permissions(self, file_open: Open) -> dict:
-        allowed_sids = []
-        query_request = SMB2QueryInfoRequest()
-        query_request["info_type"] = InfoType.SMB2_0_INFO_SECURITY
-        query_request["output_buffer_length"] = 65535
-        query_request["additional_information"] = SECURITY_INFO_DACL
-        query_request["file_id"] = file_open.file_id
+        """Get file permissions from an open file handle"""
+        try:
+            allowed_sids = []
+            query_request = SMB2QueryInfoRequest()
+            query_request["info_type"] = InfoType.SMB2_0_INFO_SECURITY
+            query_request["output_buffer_length"] = 65535
+            query_request["additional_information"] = SECURITY_INFO_DACL
+            query_request["file_id"] = file_open.file_id
 
-        req = file_open.connection.send(
-            query_request,
-            file_open.tree_connect.session.session_id,
-            file_open.tree_connect.tree_connect_id,
-        )
+            req = file_open.connection.send(
+                query_request,
+                file_open.tree_connect.session.session_id,
+                file_open.tree_connect.tree_connect_id,
+            )
 
-        response = file_open.connection.receive(req)
-        query_response = SMB2QueryInfoResponse()
-        query_response.unpack(response["data"].get_value())
-        security_descriptor = SMB2CreateSDBuffer()
-        security_descriptor.unpack(query_response["buffer"].get_value())
+            response = file_open.connection.receive(req)
+            query_response = SMB2QueryInfoResponse()
+            query_response.unpack(response["data"].get_value())
+            security_descriptor = SMB2CreateSDBuffer()
+            security_descriptor.unpack(query_response["buffer"].get_value())
 
-        aces = security_descriptor.get_dacl()["aces"]
+            aces = security_descriptor.get_dacl()["aces"]
 
-        denied_sids = [str(ace["sid"]) for ace in aces if ace["ace_type"].value == 1]
-        # If the SID is present in any deny ACE, it is not allowed to read the file
-        for ace in aces:
-            if str(ace["sid"]) not in denied_sids and has_read_access(
-                ace["mask"].value
-            ):
-                allowed_sids.append(str(ace["sid"]))
-        allowed_sids = list(set(allowed_sids))  # remove duplicates
-        return allowed_sids
+            denied_sids = [
+                str(ace["sid"]) for ace in aces if ace["ace_type"].value == 1
+            ]
+            # If the SID is present in any deny ACE, it is not allowed to read the file
+            for ace in aces:
+                if str(ace["sid"]) not in denied_sids and has_read_access(
+                    ace["mask"].value
+                ):
+                    allowed_sids.append(str(ace["sid"]))
+            allowed_sids = list(set(allowed_sids))  # remove duplicates
+            return allowed_sids
+        except Exception as e:
+            logger.warning(f"Error getting file permissions: {e}")
+            return []
 
     @retryable(
         retries=3,
@@ -887,22 +911,29 @@ class SMBClient:
                 share = self._get_share(share_name)
                 share.connect()
                 file_open = Open(share, file_info["full_path"].lstrip("\\").lstrip(" "))
-                file_open.create(
-                    ImpersonationLevel.Impersonation,
-                    FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES
-                    | FilePipePrinterAccessMask.READ_CONTROL,  # Need READ_CONTROL for ACLs
-                    FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                    ShareAccess.FILE_SHARE_READ,  # Only need read sharing for read-only access
-                    CreateDisposition.FILE_OPEN,
-                    CreateOptions.FILE_NON_DIRECTORY_FILE,
-                )
-                allowed_sids = await self._get_file_permissions(file_open)
-                all_sids.update(allowed_sids)
-                file_open.close()
+                try:
+                    file_open.create(
+                        ImpersonationLevel.Impersonation,
+                        FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES
+                        | FilePipePrinterAccessMask.READ_CONTROL,  # Need READ_CONTROL for ACLs
+                        FileAttributes.FILE_ATTRIBUTE_NORMAL,
+                        ShareAccess.FILE_SHARE_READ,  # Only need read sharing for read-only access
+                        CreateDisposition.FILE_OPEN,
+                        CreateOptions.FILE_NON_DIRECTORY_FILE,
+                    )
+                    allowed_sids = await self._get_file_permissions(file_open)
+                    all_sids.update(allowed_sids)
+                except SMBOSError as e:
+                    logger.warning(
+                        f"Access denied or error getting permissions for {file_info['full_path']}: {e}"
+                    )
+                    continue
+                finally:
+                    file_open.close()
 
             except Exception as e:
                 logger.warning(
-                    f"Failed to get permissions for {file_info['full_path']}: {str(e)}"
+                    f"Error accessing file for permissions {file_info['full_path']}: {e}"
                 )
                 continue
 
@@ -955,77 +986,85 @@ class SMBClient:
             list[str]: List of SIDs with read access
         """
         share = self._get_share(share_name)
-        share.connect()
-
         try:
+            share.connect()
             file_open = Open(share, file_info["full_path"].lstrip("\\").lstrip(" "))
-            file_open.create(
-                ImpersonationLevel.Impersonation,
-                FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES
-                | FilePipePrinterAccessMask.READ_CONTROL,  # Need READ_CONTROL for ACLs
-                FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                ShareAccess.FILE_SHARE_READ,  # Only need read sharing for read-only access
-                CreateDisposition.FILE_OPEN,
-                CreateOptions.FILE_NON_DIRECTORY_FILE,
+            try:
+                file_open.create(
+                    ImpersonationLevel.Impersonation,
+                    FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES
+                    | FilePipePrinterAccessMask.READ_CONTROL,  # Need READ_CONTROL for ACLs
+                    FileAttributes.FILE_ATTRIBUTE_NORMAL,
+                    ShareAccess.FILE_SHARE_READ,  # Only need read sharing for read-only access
+                    CreateDisposition.FILE_OPEN,
+                    CreateOptions.FILE_NON_DIRECTORY_FILE,
+                )
+
+                allowed_sids = await self._get_file_permissions(file_open)
+                return allowed_sids
+
+            except SMBOSError as e:
+                logger.warning(
+                    f"Access denied or error getting permissions for {file_info['full_path']}: {e}"
+                )
+                return []
+            finally:
+                file_open.close()
+
+        except Exception as e:
+            logger.warning(
+                f"Error accessing file for permissions {file_info['full_path']}: {e}"
             )
-
-            allowed_sids = await self._get_file_permissions(file_open)
-            return allowed_sids
-
-        finally:
-            file_open.close()
+            return []
 
     async def get_file_content(
         self, share_name: str, file_path: str
     ) -> AsyncGenerator[bytes, None]:
-        """Get content of a file from SMB share
-
-        Args:
-            share_name: Name of the SMB share
-            file_path: Full path to the file within the share
-
-        Yields:
-            bytes: Chunks of file content
-        """
+        """Get content of a file from SMB share"""
         share = self._get_share(share_name)
-        share.connect()
 
         try:
+            share.connect()
             file_open = Open(share, file_path.lstrip("\\").lstrip(" "))
-            file_open.create(
-                ImpersonationLevel.Impersonation,
-                FilePipePrinterAccessMask.FILE_READ_DATA
-                | FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,
-                FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                ShareAccess.FILE_SHARE_READ,
-                CreateDisposition.FILE_OPEN,
-                CreateOptions.FILE_NON_DIRECTORY_FILE
-                | CreateOptions.FILE_SEQUENTIAL_ONLY,
-            )
 
-            offset = 0
-            file_size = file_open.end_of_file
+            try:
+                file_open.create(
+                    ImpersonationLevel.Impersonation,
+                    FilePipePrinterAccessMask.FILE_READ_DATA
+                    | FilePipePrinterAccessMask.FILE_READ_ATTRIBUTES,
+                    FileAttributes.FILE_ATTRIBUTE_NORMAL,
+                    ShareAccess.FILE_SHARE_READ,
+                    CreateDisposition.FILE_OPEN,
+                    CreateOptions.FILE_NON_DIRECTORY_FILE
+                    | CreateOptions.FILE_SEQUENTIAL_ONLY,
+                )
+            except SMBOSError as e:
+                logger.warning(f"Access denied or error opening file {file_path}: {e}")
+                return
 
-            logger.debug(f"getting content for {file_path} of length {file_size}")
-            while offset < file_size:
-                try:
-                    chunk_size = min(CHUNK_SIZE, file_size - offset)
-                    chunk = file_open.read(offset, chunk_size)
-                    yield chunk
-                    offset += chunk_size
-                except SMBOSError as e:
-                    logger.warning(
-                        f"SMB error while reading {file_path}, skipping: {e}"
-                    )
-                    return
+            try:
+                offset = 0
+                file_size = file_open.end_of_file
 
-            logger.debug(f"finished reading {file_path}")
+                logger.debug(f"getting content for {file_path} of length {file_size}")
+                while offset < file_size:
+                    try:
+                        chunk_size = min(CHUNK_SIZE, file_size - offset)
+                        chunk = file_open.read(offset, chunk_size)
+                        yield chunk
+                        offset += chunk_size
+                    except SMBOSError as e:
+                        logger.warning(f"Error reading chunk from {file_path}: {e}")
+                        return
 
-        except SMBOSError as e:
-            logger.warning(f"SMB error while opening {file_path}, skipping: {e}")
+                logger.debug(f"finished reading {file_path}")
+
+            finally:
+                file_open.close()
+
+        except Exception as e:
+            logger.warning(f"Error accessing file {file_path}: {e}")
             return
-        finally:
-            file_open.close()
 
 
 class SMBShareDataSource(BaseDataSource):
