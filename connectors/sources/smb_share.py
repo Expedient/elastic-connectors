@@ -1402,27 +1402,34 @@ class SMBShareDataSource(BaseDataSource):
 
     def _format_access_control(self, domain_user):
         """format the access control for the document"""
-        access_control = [domain_user["upn"], domain_user["sid"]]
+        # support matching users on upn or email
+        access_control = [
+            f"user:{domain_user['upn']}",
+            f"sid:{domain_user['sid']}",
+            f"email:{domain_user['email']}" if domain_user.get("email") else None,
+        ]
+        # Filter out None values
+        access_control = [ac for ac in access_control if ac is not None]
+
         doc = {
             "_id": domain_user["sid"],
             "identity": {
-                "username": domain_user["name"],
+                "username": domain_user["upn"],
                 "user_id": domain_user["sid"],
+                "email": domain_user.get("email"),
             },
             "created_at": iso_utc(),
         } | es_access_control_query(access_control)
+
         return doc
 
     async def get_access_control(self):
-        """Get the access control for the SMB share
-
-        Yields:
-            dict: Access control document for each domain user
-        """
+        """Get the access control for the SMB share"""
         if not self._dls_enabled():
             self._logger.warning("DLS is not enabled. Skipping")
             return
 
         domain_users = await self.ldap_client.get_all_domain_users()
         for user in domain_users:
-            yield self._format_access_control(user)
+            doc = self._format_access_control(user)
+            yield doc
