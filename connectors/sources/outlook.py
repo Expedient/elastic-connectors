@@ -563,6 +563,14 @@ class OutlookDocFormatter:
         }
 
     def contact_doc_formatter(self, contact, timezone):
+        # Check if the contact has the 'email_addresses' attribute
+        email_addresses = []
+        if hasattr(contact, 'email_addresses'):
+            email_addresses = [
+                email.email for email in (contact.email_addresses or [])
+            ]
+
+        # Proceed to construct and return the document
         return {
             "_id": contact.id,
             "type": "Contact",
@@ -570,9 +578,7 @@ class OutlookDocFormatter:
                 source_datetime=contact.last_modified_time, timezone=timezone
             ),
             "name": contact.display_name,
-            "email_addresses": [
-                email.email for email in (contact.email_addresses or [])
-            ],
+            "email_addresses": email_addresses,
             "contact_numbers": [
                 number.phone_number
                 for number in contact.phone_numbers or []
@@ -908,33 +914,41 @@ class OutlookDataSource(BaseDataSource):
             doit (boolean, optional): Boolean value for whether to get content or not. Defaults to False.
 
         Returns:
-            dictionary: Content document with _id, _timestamp and attachment content
+            dictionary: Content document with _id, _timestamp and attachment content, or None if an error occurs.
         """
-        file_size = attachment.size
-        if not (doit and file_size > 0):
-            return
+        try:
+            file_size = attachment.size
+            if not (doit and file_size > 0):
+                return
 
-        filename = attachment.name
-        file_extension = self.get_file_extension(filename)
-        if not self.can_file_be_downloaded(
-            file_extension,
-            filename,
-            file_size,
-        ):
-            return
+            filename = attachment.name
 
-        document = {
-            "_id": attachment.attachment_id.id,
-            "_timestamp": ews_format_to_datetime(
-                source_datetime=attachment.last_modified_time, timezone=timezone
-            ),
-        }
-        return await self.download_and_extract_file(
-            document,
-            filename,
-            file_extension,
-            partial(self.download_func, attachment.content),
-        )
+            print(f"Processing File {filename} --- size {file_size}")
+            file_extension = self.get_file_extension(filename)
+            if not self.can_file_be_downloaded(
+                file_extension,
+                filename,
+                file_size,
+            ):
+                return
+
+            document = {
+                "_id": attachment.attachment_id.id,
+                "_timestamp": ews_format_to_datetime(
+                    source_datetime=attachment.last_modified_time, timezone=timezone
+                ),
+            }
+            return await self.download_and_extract_file(
+                document,
+                filename,
+                file_extension,
+                partial(self.download_func, attachment.content),
+            )
+
+        except Exception as e:
+            # Handle the exception (you might want to log this or take other actions)
+            print(f"An error occurred: {e}")
+            return None
 
     async def download_func(self, content):
         """This is a fake-download function
