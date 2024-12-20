@@ -1372,8 +1372,13 @@ class SMBShareDataSource(BaseDataSource):
                 )
                 continue
 
+            # Construct full network path
+            full_network_path = (
+                rf"\\{self.server_address}\{self.share_name}\{file['full_path']}"
+            )
+
             document = {
-                "path": file["full_path"],
+                "path": full_network_path,
                 "title": file["name"],
                 "type": file["type"],
                 "file_extension": self.get_file_extension(file["name"]),
@@ -1398,7 +1403,7 @@ class SMBShareDataSource(BaseDataSource):
     def _format_access_control(self, domain_user):
         """format the access control for the document"""
         access_control = [domain_user["upn"], domain_user["sid"]]
-        return {
+        doc = {
             "_id": domain_user["sid"],
             "identity": {
                 "username": domain_user["name"],
@@ -1406,6 +1411,7 @@ class SMBShareDataSource(BaseDataSource):
             },
             "created_at": iso_utc(),
         } | es_access_control_query(access_control)
+        return doc
 
     async def get_access_control(self):
         """Get the access control for the SMB share
