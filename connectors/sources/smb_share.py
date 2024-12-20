@@ -1406,7 +1406,7 @@ class SMBShareDataSource(BaseDataSource):
         access_control = [
             f"user:{domain_user['upn']}",
             f"sid:{domain_user['sid']}",
-            f"email:{domain_user['email']}" if domain_user.get("email") else None,
+            f"email:{domain_user.get('email')}",
         ]
         # Filter out None values
         access_control = [ac for ac in access_control if ac is not None]
@@ -1414,9 +1414,9 @@ class SMBShareDataSource(BaseDataSource):
         doc = {
             "_id": domain_user["sid"],
             "identity": {
-                "username": domain_user["upn"],
-                "user_id": domain_user["sid"],
-                "email": domain_user.get("email"),
+                "username": f"user:{domain_user['upn']}",
+                "user_id": f"sid:{domain_user['sid']}",
+                "email": f"email:{domain_user.get('email')}",
             },
             "created_at": iso_utc(),
         } | es_access_control_query(access_control)
