@@ -334,7 +334,7 @@ class ExchangeUsers:
         configuration = Configuration(
             credentials=credentials,
             server=self.exchange_server,
-            retry_policy=FaultTolerance(max_wait=120),
+            retry_policy=FaultTolerance(max_wait=600),
         )
 
         async for user in self.get_users():
@@ -449,10 +449,10 @@ class Office365Users:
                         credentials=credentials,
                         auth_type=OAUTH2,
                         service_endpoint=EWS_ENDPOINT,
-                        retry_policy=FaultTolerance(max_wait=120),
+                        retry_policy=FaultTolerance(max_wait=600),
                     )
                     print(f"User: {user}, Mail: {mail}")
-                    
+
                     # Create the user account
                     user_account = Account(
                         primary_smtp_address=mail,
@@ -460,10 +460,10 @@ class Office365Users:
                         autodiscover=False,
                         access_type=IMPERSONATION,
                     )
-                    
+
                     # Yield the user account
                     yield user_account
-                
+
                 except Exception as e:
                     # Log the exception or handle it accordingly
                     print(f"Skipping user due to error: {e}")
@@ -503,9 +503,11 @@ class OutlookDocFormatter:
             ),
             "type": "Calendar",
             "title": calendar.subject,
-            "meeting_type": "Single"
-            if calendar.type == "Single"
-            else f"Recurring {calendar.recurrence.pattern}",
+            "meeting_type": (
+                "Single"
+                if calendar.type == "Single"
+                else f"Recurring {calendar.recurrence.pattern}"
+            ),
             "organizer": calendar.organizer.email_address,
         }
 
@@ -565,10 +567,8 @@ class OutlookDocFormatter:
     def contact_doc_formatter(self, contact, timezone):
         # Check if the contact has the 'email_addresses' attribute
         email_addresses = []
-        if hasattr(contact, 'email_addresses'):
-            email_addresses = [
-                email.email for email in (contact.email_addresses or [])
-            ]
+        if hasattr(contact, "email_addresses"):
+            email_addresses = [email.email for email in (contact.email_addresses or [])]
 
         # Proceed to construct and return the document
         return {
