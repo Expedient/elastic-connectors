@@ -26,6 +26,7 @@ from exchangelib import (
     Identity,
     OAuth2Credentials,
 )
+from exchangelib.items import DistributionList
 from exchangelib.protocol import BaseProtocol, NoVerifyHTTPAdapter
 from ldap3 import SAFE_SYNC, Connection, Server
 
@@ -508,7 +509,9 @@ class OutlookDocFormatter:
                 if calendar.type == "Single"
                 else f"Recurring {calendar.recurrence.pattern}"
             ),
-            "organizer": calendar.organizer.email_address,
+            "organizer": (
+                calendar.organizer.email_address if calendar.organizer else None
+            ),
         }
 
         if child_calendar in ["Folder (Birthdays)", "Birthdays (Birthdays)"]:
@@ -581,10 +584,15 @@ class OutlookDocFormatter:
             "email_addresses": email_addresses,
             "contact_numbers": [
                 number.phone_number
-                for number in contact.phone_numbers or []
-                if number.phone_number
+                for number in (
+                    contact.phone_numbers if hasattr(contact, "phone_numbers") else []
+                )
+                or []
+                if hasattr(number, "phone_number") and number.phone_number
             ],
-            "company_name": contact.company_name,
+            "company_name": (
+                contact.company_name if hasattr(contact, "company_name") else None
+            ),
             "birthday": ews_format_to_datetime(
                 source_datetime=contact.birthday, timezone=timezone
             ),
@@ -687,6 +695,9 @@ class OutlookClient:
     async def get_contacts(self, account):
         folder = account.root / "Top of Information Store" / "Contacts"
         for contact in await asyncio.to_thread(folder.all().only, *CONTACT_FIELDS):
+            # Skip distribution lists using type check
+            if isinstance(contact, DistributionList):
+                continue
             yield contact
 
 
