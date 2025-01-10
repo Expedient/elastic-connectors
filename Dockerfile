@@ -1,4 +1,4 @@
-FROM python:3.11-slim-bookworm
+FROM python:3.11
 RUN apt update && apt upgrade && apt install make -y
 COPY . /app
 WORKDIR /app
