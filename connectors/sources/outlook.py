@@ -214,6 +214,12 @@ class SSLFailed(Exception):
     pass
 
 
+class RequestTimeoutError(Exception):
+    """Exception class for request timeout (408) errors"""
+
+    pass
+
+
 class ManageCertificate:
     async def store_certificate(self, certificate):
         async with aiofiles.open(CERT_FILE, "w") as file:
@@ -380,6 +386,9 @@ class Office365Users:
             case 404:
                 msg = f"Resource Not Found. Error: {response}"
                 raise NotFound(msg)
+            case 408:
+                msg = f"Request timed out. The local browser did not complete a request in time. Error: {response}"
+                raise RequestTimeoutError(msg)
             case _:
                 raise
 
@@ -388,6 +397,7 @@ class Office365Users:
         interval=RETRY_INTERVAL,
         strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
         skipped_exceptions=UnauthorizedException,
+        retried_exceptions=[RequestTimeoutError],
     )
     async def _fetch_token(self):
         try:
