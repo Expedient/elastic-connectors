@@ -397,7 +397,6 @@ class Office365Users:
         interval=RETRY_INTERVAL,
         strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
         skipped_exceptions=UnauthorizedException,
-        retried_exceptions=[RequestTimeoutError],
     )
     async def _fetch_token(self):
         try:
