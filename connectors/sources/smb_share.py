@@ -1290,7 +1290,7 @@ class SMBShareDataSource(BaseDataSource):
 
         try:
             document = {
-                "_id": file["_id"],
+                "_id": file["id"],
                 "_timestamp": file["_timestamp"],
             }
 
