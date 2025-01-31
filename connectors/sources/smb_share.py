@@ -862,42 +862,6 @@ class SMBClient:
         finally:
             file_open.close()
 
-    @retryable(
-        retries=2,
-        interval=30,
-        strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
-        skipped_exceptions=[SMBOSError, SMBException],
-    )
-    async def get_files_content(
-        self, share_name: str, path: str, get_permissions: bool = False
-    ) -> AsyncGenerator[dict, None]:
-        """
-        Lists all files in the given path and yields their contents
-        Yields dicts containing file information and content
-        Skips directories as they don't have content to read
-        """
-        async for file_info in self.list_files(share_name, path):
-            if file_info["is_directory"]:
-                continue
-
-            share = self._get_share(share_name)
-            share.connect()
-
-            content, file_size, descriptor = await self._read_file_content(
-                share, file_info["full_path"], get_permissions
-            )
-            yield {
-                "path": rf"\\{self.host}\{share_name}\{file_info['full_path']}",
-                "body": content,
-                "title": file_info["name"],
-                "type": file_info["name"].split(".")[-1],
-                "size": file_size,
-                "_id": file_info["file_id"],
-                "created_at": file_info["created_at"],
-                "modified_at": file_info["modified_at"],
-                **({"file_descriptor": descriptor} if descriptor else {}),
-            }
-
     async def get_all_sids_in_path(self, share_name: str, path: str) -> list[str]:
         """Collect all unique SIDs that appear in any file's ACL in the given path"""
         all_sids = set()
