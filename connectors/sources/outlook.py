@@ -981,7 +981,7 @@ class OutlookDataSource(BaseDataSource):
             )
             yield (
                 self._decorate_with_access_control(
-                    document, [account.primary_smtp_address]
+                    document, [_prefix_email(account.primary_smtp_address)]
                 ),
                 partial(
                     self.get_content, attachment=copy(attachment), timezone=timezone
@@ -997,7 +997,7 @@ class OutlookDataSource(BaseDataSource):
             )
             yield (
                 self._decorate_with_access_control(
-                    document, [account.primary_smtp_address]
+                    document, [_prefix_email(account.primary_smtp_address)]
                 ),
                 None,
             )
@@ -1020,7 +1020,7 @@ class OutlookDataSource(BaseDataSource):
             )
             yield (
                 self._decorate_with_access_control(
-                    document, [account.primary_smtp_address]
+                    document, [_prefix_email(account.primary_smtp_address)]
                 ),
                 None,
             )
@@ -1033,7 +1033,7 @@ class OutlookDataSource(BaseDataSource):
             )
             yield (
                 self._decorate_with_access_control(
-                    document, [account.primary_smtp_address]
+                    document, [_prefix_email(account.primary_smtp_address)]
                 ),
                 None,
             )
@@ -1081,7 +1081,7 @@ class OutlookDataSource(BaseDataSource):
         )
         yield (
             self._decorate_with_access_control(
-                document, [account.primary_smtp_address]
+                document, [_prefix_email(account.primary_smtp_address)]
             ),
             None,
         )
