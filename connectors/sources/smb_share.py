@@ -1290,7 +1290,7 @@ class SMBShareDataSource(BaseDataSource):
 
         try:
             document = {
-                "_id": file["id"],
+                "_id": file["_id"],
                 "_timestamp": file["_timestamp"],
             }
 
@@ -1301,7 +1301,7 @@ class SMBShareDataSource(BaseDataSource):
                 partial(
                     self.smb_client.get_file_content,
                     share_name=self.share_name,
-                    file_path=file["path"],
+                    file_path=file["relative_path"],
                 ),
             )
         except Exception as e:
@@ -1342,6 +1342,7 @@ class SMBShareDataSource(BaseDataSource):
             )
 
             document = {
+                "relative_path": file["full_path"],  # yes the naming is bad here
                 "path": full_network_path,
                 "title": file["name"],
                 "type": file["type"],
