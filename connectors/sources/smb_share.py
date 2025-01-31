@@ -1390,7 +1390,8 @@ class SMBShareDataSource(BaseDataSource):
 
             if self._dls_enabled():
                 self._logger.debug(f"resolving document sids for - {file['full_path']}")
-                document[ACCESS_CONTROL] = await self.resolve_document_sids(file)
+                sids = await self.resolve_document_sids(file)
+                document[ACCESS_CONTROL] = [f"sid:{sid}" for sid in sids]
 
             # For files, create a content getter function
             # For directories, use None
